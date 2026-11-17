@@ -241,6 +241,11 @@ def validate_runtime_parameters(config: dict) -> None:
     bid_aac = (
         settings["algorithm"] == "bid_backward" and settings["bid"]["execution_horizon"] == "aac"
     )
+    layouts = config.get("robot", {}).get("group_layouts", {})
+    if (settings["algorithm"] == "aac" or bid_aac) and any(
+        item.get("joint_tool_dofs", 0) for item in layouts.values()
+    ):
+        raise ValueError("AAC scoring requires scalar grippers; joint tools are unsupported")
     adaptive_async = settings["algorithm"] in {"aac", "autohorizon"} and (
         settings["inference_schedule"] != "serial"
     )

@@ -1,5 +1,8 @@
 .DS_Store
 
+# Local agent entry for this installation; keep it out of commits.
+/AGENTS.md
+
 # Local training jobs, cluster submission payloads, and TensorBoard operations.
 # These are intentionally kept out of the public ManiMux repository.
 /.local/
@@ -63,6 +66,9 @@ logs/
 !/manimux/embodiments/arm/piper/assets/
 !/manimux/embodiments/arm/piper/assets/**
 
+# Public Wuji Hand 2.2 geometry retains the official MIT notice and source hashes.
+!/manimux/embodiments/end_effector/wuji/assets/
+!/manimux/embodiments/end_effector/wuji/assets/**
 # Hand-authored OmniGripper flange-reference frame, without proprietary CAD.
 !/manimux/embodiments/end_effector/omnigripper/assets/
 !/manimux/embodiments/end_effector/omnigripper/assets/**

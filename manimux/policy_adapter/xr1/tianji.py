@@ -79,7 +79,7 @@ class XR1TianjiTacCapAdapter(PolicyAdapter):
         if kinematics is None and robot.get("config") is not None:
             from manimux.embodiments.robot import RobotModel
 
-            kinematics = RobotModel.from_config(robot["config"]).kinematics
+            kinematics = RobotModel.from_robot_config(robot).kinematics
         if not isinstance(kinematics, RobotKinematics):
             raise ValueError("XR-1 Tianji requires the assembled robot kinematics")
         self.kinematics = kinematics

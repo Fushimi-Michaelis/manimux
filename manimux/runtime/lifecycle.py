@@ -67,7 +67,7 @@ class ShutdownStatus:
 
     def __init__(self, *, enabled, robot, policy, run_dir, episode_id,
                  publisher_factory=RoboGUIPublisher, interval_s=0.5,
-                 home=None, control_factory=ControlClient):
+                 home=None, home_available=None, control_factory=ControlClient):
         self.enabled = enabled
         self.robot, self.policy = robot, policy
         self.identity = {"run_dir": run_dir, "episode_id": episode_id}
@@ -78,6 +78,7 @@ class ShutdownStatus:
         self._thread = None
         self._phase, self._detail, self._since = "", "", 0.0
         self._home = home
+        self._home_available = home_available
         self._control_factory = control_factory
         self._recovery_token = ""
 
@@ -110,7 +111,7 @@ class ShutdownStatus:
                         metadata = {**self.identity, "phase": self._phase,
                                     "detail": self._detail,
                                     "recovery_token": self._recovery_token,
-                                    "can_home": self._home is not None,
+                                    "can_home": self._can_home(),
                                     "elapsed_s": time.monotonic() - self._since}
                     publisher.publish(RuntimeEvent(
                         "runtime_shutdown", robot=self.robot, policy=self.policy,
@@ -121,6 +122,11 @@ class ShutdownStatus:
                 publisher.close()
         except Exception:
             log.exception("Shutdown status publisher failed; hardware cleanup continues")
+
+    def _can_home(self):
+        return self._home is not None and (
+            self._home_available is None or self._home_available()
+        )
 
     def wait_for_release(self, reason):
         """The hardware owner handles GUI requests; the heartbeat never moves a robot."""
@@ -147,7 +153,11 @@ class ShutdownStatus:
                         if action == "release" and request.get("supported") is True:
                             self.update("closing", "Operator confirmed support for ALL arms and payloads.")
                             return ReleaseDecision.SUPPORTED_RELEASE
-                        if action == "home" and request.get("path_clear") is True and self._home is not None:
+                        if action == "home" and request.get("path_clear") is True:
+                            if not self._can_home():
+                                raise RuntimeError(
+                                    "Home retry is unavailable after cleanup started"
+                                )
                             self.update("homing", "Operator requested Home retry; checking control health.")
                             self._home()
                             self.update("closing", "Home completed; rechecking every arm before release.")

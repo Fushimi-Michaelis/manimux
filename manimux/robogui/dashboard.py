@@ -2993,6 +2993,9 @@ def _parser() -> argparse.ArgumentParser:
         help="RoboGUI YAML; defaults to following policy inputs, supports manual camera preview",
     )
     parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument(
+        "--local", type=Path, help="Station YAML supplying physical component mounts",
+    )
     parser.add_argument("--port", type=int, default=8086)
     parser.add_argument("--render-hz", type=float, default=30.0,
                         help="Live display refresh cap; independent of robot control Hz")
@@ -3041,7 +3044,7 @@ def main() -> None:
         "tcp://127.0.0.1:5568" if live else "tcp://127.0.0.1:*")
     args.control_endpoint = args.control_endpoint or (
         "tcp://127.0.0.1:5569" if live else "tcp://127.0.0.1:*")
-    robogui_config = load_robogui_config(args.config, robot=args.robot)
+    robogui_config = load_robogui_config(args.config, robot=args.robot, local=args.local)
     robot = load_robot_view(robogui_config)
     if args.replay_actions is not None:
         from .action_replay import serve_action_replay

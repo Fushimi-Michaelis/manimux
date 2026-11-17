@@ -1,0 +1,4 @@
+# Reuse the hardware control envelopes; select memory endpoints explicitly.
+_base_: ../../embodiment/robot/tianji_wuji_right_control.yaml
+robot:
+  type: manimux.examples.tianji_wuji:build_robot

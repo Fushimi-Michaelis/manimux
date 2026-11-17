@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from manimux.embodiments.layout import group_layouts
+from manimux.embodiments.layout import gripper_indices, group_layouts
 from manimux.policies.actions import action_groups
 from manimux.policies.base import action_interval
 from manimux.policy_adapter.base import PolicyAdapter
@@ -28,6 +28,7 @@ class JointAdapter(PolicyAdapter):
     def __init__(self, robot: dict, policy: dict, *, kinematics=None) -> None:
         self._dimensions = dict(robot["group_dims"])
         self._layouts = group_layouts(self._dimensions, policy["adapter"])
+        self._gripper_indices = gripper_indices(self._layouts)
         self._gripper_mapping = GripperMapping.from_options(
             policy["adapter"].get("gripper_mapping")
         )
@@ -63,10 +64,10 @@ class JointAdapter(PolicyAdapter):
                 f"got {sorted(horizons)}"
             )
         if self._gripper_mapping.mode == "curve":
-            for name, values in groups.items():
-                tool = slice(self._layouts[name]["arm_dofs"], None)
+            for name, index in self._gripper_indices.items():
+                values = groups[name]
                 groups[name] = values.copy()
-                groups[name][:, tool] = self._gripper_mapping.map(values[:, tool])
+                groups[name][:, index] = self._gripper_mapping.map(values[:, index])
         return ActionChunk(
             plan_id=f"joint-{context.request_seq}-{uuid.uuid4().hex[:8]}",
             request_seq=context.request_seq,
@@ -84,16 +85,17 @@ class JointAdapter(PolicyAdapter):
             return request
         condition = np.asarray(condition, dtype=np.float64).copy()
         weights = np.asarray(request.condition_weights, dtype=np.float64)
-        if (
-            condition.shape != (self._horizon_steps, sum(self._dimensions.values()))
-            or weights.shape != (self._horizon_steps,)
-        ):
+        if condition.shape != (
+            self._horizon_steps,
+            sum(self._dimensions.values()),
+        ) or weights.shape != (self._horizon_steps,):
             raise ValueError("Joint RTC condition must match the configured horizon and groups")
         active = weights > 0
         offset = 0
         for name, width in self._dimensions.items():
-            tool = slice(offset + self._layouts[name]["arm_dofs"], offset + width)
-            condition[active, tool] = self._gripper_mapping.inverse(condition[active, tool])
+            if name in self._gripper_indices:
+                index = offset + self._gripper_indices[name]
+                condition[active, index] = self._gripper_mapping.inverse(condition[active, index])
             offset += width
         return replace(request, action_condition=condition)
 

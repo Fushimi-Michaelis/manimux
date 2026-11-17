@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -17,6 +18,7 @@ from manimux.clock import Clock, SystemClock
 from manimux.embodiments.arm.base import ArmBase, ArmController, ArmModel
 from manimux.embodiments.end_effector.base import EndEffectorModel
 from manimux.embodiments.end_effector.gripper import GripperBase, GripperCommand
+from manimux.embodiments.end_effector.joint_tool import JointToolBase, JointToolCommand
 from manimux.embodiments.layout import assembly_action_contract, group_layouts
 from manimux.embodiments.sensor.base import SensorBase
 from manimux.kinematics.base import FloatArray, ManipulatorKinematicsBase, rigid_transform
@@ -34,7 +36,7 @@ HandGuidingHandler = Callable[[Sequence[str], threading.Event, Callable[[], None
 class RobotBase(ABC):
     """Assemble arms and supported position-controlled end effectors.
 
-    Each group contains one arm component and an optional separate GripperBase.
+    Each group contains one arm and an optional GripperBase or JointToolBase.
     An integrated component owns its full coordinates, including a built-in gripper;
     no separate tool means no extra coordinate or hardware command is appended.
     Other end-effector command capabilities require an explicit mapping; this
@@ -54,7 +56,7 @@ class RobotBase(ABC):
         arm_components: Mapping[str, ArmBase],
         models: Mapping[str, ManipulatorKinematicsBase],
         model: RobotModel | None = None,
-        end_effectors: Mapping[str, GripperBase] | None = None,
+        end_effectors: Mapping[str, GripperBase | JointToolBase] | None = None,
         sensors: Mapping[str, SensorBase] | None = None,
         clock: Clock | None = None,
         stale_timeout_s: float = 0.2,
@@ -77,8 +79,16 @@ class RobotBase(ABC):
         self.model = model
         self._kinematics = model.kinematics if model is not None else RobotKinematics(models)
         for name, arm in arm_components.items():
-            if models[name].num_coordinates != arm.num_joints + (name in tools):
+            tool = tools.get(name)
+            tool_dofs = (
+                tool.num_joints if isinstance(tool, JointToolBase) else int(tool is not None)
+            )
+            if models[name].num_coordinates != arm.num_joints + tool_dofs:
                 raise ValueError(f"{name}: model layout does not match its components")
+            if isinstance(tool, JointToolBase) and (
+                models[name].coordinates[arm.num_joints:] != tool.coordinates
+            ):
+                raise ValueError(f"{name}: joint tool coordinates do not match its model")
         self._arm_components = MappingProxyType(dict(arm_components))
         self._end_effectors = MappingProxyType(tools)
         sensor_components = dict(sensors or {})
@@ -103,7 +113,7 @@ class RobotBase(ABC):
         return self._arm_components
 
     @property
-    def end_effectors(self) -> Mapping[str, GripperBase]:
+    def end_effectors(self) -> Mapping[str, GripperBase | JointToolBase]:
         return self._end_effectors
 
     @property
@@ -124,13 +134,22 @@ class RobotBase(ABC):
         bounds = {controller: controller.command_bounds() for controller in self._controllers}
         grouped = {}
         for name, arm in self.arm_components.items():
+            tool = self.end_effectors.get(name)
             if arm.channel in bounds[arm.controller]:
                 rows = np.array(bounds[arm.controller][arm.channel], dtype=float, copy=True)
                 if rows.shape != (arm.num_joints, 2):
                     raise ValueError(f"{name}: controller command bounds do not match arm layout")
-                grouped[name] = (
-                    np.vstack((rows, [0.0, 1.0])) if name in self.end_effectors else rows
-                )
+            elif isinstance(tool, JointToolBase):
+                # Unknown arm bounds remain unbounded; do not discard the tool's
+                # declared bounds or invent device limits for its arm.
+                rows = np.tile([-np.inf, np.inf], (arm.num_joints, 1))
+            else:
+                continue
+            if isinstance(tool, JointToolBase):
+                rows = np.vstack((rows, tool.command_bounds()))
+            elif tool is not None:
+                rows = np.vstack((rows, [0.0, 1.0]))
+            grouped[name] = rows
         return grouped
 
     def command_status(self) -> dict:
@@ -195,12 +214,20 @@ class RobotBase(ABC):
                 groups[name] = state.joints.copy()
                 timestamps.append(state.monotonic_ns)
                 if name in self.end_effectors:
-                    tool_state = self.end_effectors[name].get_state()
+                    tool = self.end_effectors[name]
+                    tool_state = tool.get_state()
+                    if isinstance(tool, JointToolBase):
+                        tool.validate_state(tool_state)
                     tool_ns = int(tool_state.timestamp * 1e9)
                     if not 0 <= self._clock.now_ns() - tool_ns <= self._stale_ns:
-                        raise RuntimeError(f"{name}: stale gripper feedback or clock mismatch")
-                    groups[name] = np.r_[groups[name], tool_state.opening]
-                    grippers[name] = tool_state
+                        raise RuntimeError(f"{name}: stale tool feedback or clock mismatch")
+                    position = (
+                        tool_state.position
+                        if isinstance(tool, JointToolBase) else tool_state.opening
+                    )
+                    groups[name] = np.r_[groups[name], position]
+                    if not isinstance(tool, JointToolBase):
+                        grippers[name] = tool_state
                     timestamps.append(tool_ns)
             self._sequence += 1
             return RobotState(groups, min(timestamps), self._sequence, grippers=grippers)
@@ -226,7 +253,13 @@ class RobotBase(ABC):
                     raise ValueError(f"{name}: invalid command dimension/values")
                 batches[arm.controller][arm.channel] = q[: arm.num_joints]
                 if name in self.end_effectors:
-                    tool_commands[name] = GripperCommand(float(q[arm.num_joints]))
+                    tool = self.end_effectors[name]
+                    if isinstance(tool, JointToolBase):
+                        tool_command = JointToolCommand(q[arm.num_joints:])
+                        tool.validate_command(tool_command)
+                    else:
+                        tool_command = GripperCommand(float(q[arm.num_joints]))
+                    tool_commands[name] = tool_command
             for controller, batch in batches.items():
                 controller.validate_commands(batch)
             # Pure device validation is identical in receive-only and executing
@@ -252,11 +285,16 @@ class RobotBase(ABC):
                     self._command_status["attempting_channels"] = []
                 if self._end_effector_control:
                     for name, tool_command in tool_commands.items():
+                        capability = (
+                            "joint_tool" if isinstance(self.end_effectors[name], JointToolBase)
+                            else "gripper"
+                        )
+                        channel = f"{name}.{capability}"
                         self._command_status.update(
-                            stage="tool_dispatch", attempting_channels=[f"{name}.gripper"],
+                            stage="tool_dispatch", attempting_channels=[channel],
                         )
                         self.end_effectors[name].send_command(tool_command)
-                        self._command_status["submitted_channels"].append(f"{name}.gripper")
+                        self._command_status["submitted_channels"].append(channel)
                         self._command_status["attempting_channels"] = []
                 self._command_status["stage"] = "submitted"
             except Exception as error:
@@ -276,6 +314,15 @@ class RobotBase(ABC):
         not define Home. Assemblies with a defined Home override this method.
         """
         return None
+
+    @property
+    def shutdown_home_available(self) -> bool:
+        """Pure availability for an explicit Home retry during shutdown.
+
+        Preserve existing retry behavior by default. Assemblies may withdraw it
+        after cleanup starts; this query must not poll or command hardware.
+        """
+        return True
 
     # Idle recovery: RoboGUI may request these between rollouts. Each request builds
     # a fresh, disconnected assembly and calls the matching method below.
@@ -451,6 +498,13 @@ class RobotBase(ABC):
                 self.stop()
             except Exception as error:
                 errors.append(error)
+            try:
+                self._prepare_end_effector_close()
+            except Exception as error:
+                # A tool that still supplies support must retain its resources
+                # and the owning assembly until its release gate completes.
+                self._ready = False
+                raise ExceptionGroup("robot cleanup blocked", [*errors, error]) from None
             for name in tuple(self._end_effector_open):
                 try:
                     self.end_effectors[name].close()
@@ -475,6 +529,14 @@ class RobotBase(ABC):
                 errors.append(error)
             if errors:
                 raise ExceptionGroup("robot cleanup incomplete", errors)
+
+    def _prepare_end_effector_close(self) -> None:
+        """Optional assembly-owned tool release gate, after stop and before close.
+
+        The default preserves existing cleanup. A rejection retains all opened
+        tools/controllers for retry; a returned stop is not release permission.
+        """
+        return None
 
 
 # These data classes belong to robot assembly. They neither connect devices nor
@@ -554,20 +616,110 @@ class RobotModel:
     action_layouts: Mapping[str, dict] = field(default_factory=dict)
 
     @classmethod
-    def from_config(cls, path: Path | str) -> RobotModel:
+    def from_robot_config(cls, robot: Mapping) -> RobotModel:
+        """Load offline geometry from the same bound robot section as the runtime.
+
+        Only component mounts are consumed from hardware-construction options.
+        This never reads a station file or constructs a device controller.
+        """
+        return cls.from_config(
+            robot["config"],
+            component_mounts=robot.get("options", {}).get("component_mounts"),
+        )
+
+    def snapshot(self) -> dict:
+        """Freeze assembly parameters for offline replay, excluding hardware bindings.
+
+        Component implementations and their SDK/model assets must still be
+        installed. This is a parameter snapshot, not an archive of those assets.
+        """
+        result = {
+            "format": "manimux.robot_geometry.v1",
+            "source": str(self.config_path),
+            "name": self.name,
+            "group_order": list(self.groups),
+            "groups": {
+                name: {"arm": group.arm_name, "end_effector": group.end_effector_name}
+                for name, group in self.groups.items()
+            },
+            "components": {
+                name: {
+                    **{key: deepcopy(component[key]) for key in (
+                        "type", "implementation", "options", "action_layout", "parent", "mount",
+                    ) if key in component},
+                    "source": str(component["source"]),
+                }
+                for name, component in self.components.items()
+            },
+            "action_contract": {"group_layouts": deepcopy(dict(self.action_layouts))}
+            if self.action_layouts else None,
+        }
+        if self.home_joints:
+            result["home"] = {"joints_deg": {
+                name: np.degrees(q).tolist() for name, q in self.home_joints.items()
+            }}
+        return result
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Mapping) -> RobotModel:
+        """Restore recorded geometry without rereading assembly/component/station YAML."""
+        if (
+            not isinstance(snapshot, Mapping)
+            or snapshot.get("format") != "manimux.robot_geometry.v1"
+        ):
+            raise ValueError("unsupported robot geometry snapshot format")
+        spec = deepcopy(dict(snapshot))
+        order = spec.get("group_order")
+        groups = spec.get("groups")
+        if (
+            not isinstance(order, list) or not isinstance(groups, dict)
+            or any(not isinstance(name, str) for name in order)
+            or len(order) != len(set(order)) or set(order) != set(groups)
+        ):
+            raise ValueError("robot geometry snapshot group_order must match its groups")
+        spec["groups"] = {name: groups[name] for name in order}
+        components = spec["components"]
+        for component in components.values():
+            component["source"] = Path(component["source"])
+            component["hardware"] = {}
+        spec.pop("hardware", None)
+        return cls._from_components(
+            Path(spec["source"]), spec, components, spec.get("action_contract"),
+        )
+
+    @classmethod
+    def from_config(
+        cls, path: Path | str, *, component_mounts: Mapping[str, Mapping] | None = None,
+    ) -> RobotModel:
         source = Path(path).expanduser().resolve()
         spec = _read_mapping(source)
-        name = spec["name"]
         declarations = spec["components"]
-        components, arm_models, tool_models, mounts = {}, {}, {}, {}
+        mount_overrides = deepcopy(dict(component_mounts or {}))
+        unknown = set(mount_overrides) - set(declarations)
+        if unknown:
+            raise ValueError(f"unknown component mounts: {sorted(unknown)}")
+        components = {}
         for component_name, entry in declarations.items():
             component_source = (source.parent / entry["config"]).resolve()
             component = _read_mapping(component_source)
             component["options"] = {**component.get("options", {}), **entry.get("options", {})}
             component["hardware"] = {**component.get("hardware", {}), **entry.get("hardware", {})}
             component["parent"] = entry.get("parent")
-            component["mount"] = entry.get("mount")
+            component["mount"] = mount_overrides.get(component_name, entry.get("mount"))
             component["source"] = component_source
+            if (
+                component_name in mount_overrides
+                and component["type"] not in {"end_effector", "sensor"}
+            ):
+                raise ValueError(f"{component_name}: only tool/sensor mounts may be overridden")
+            components[component_name] = component
+        return cls._from_components(source, spec, components, assembly_action_contract(source))
+
+    @classmethod
+    def _from_components(cls, source, spec, components, contract) -> RobotModel:
+        """Construct identical geometry from resolved files or a recorded snapshot."""
+        arm_models, tool_models, mounts = {}, {}, {}
+        for component_name, component in components.items():
             factory = load_plugin(
                 component["implementation"], group="manimux.components", builtins={}
             )
@@ -575,8 +727,12 @@ class RobotModel:
             component["class"] = factory
             # Arm FK/IK includes the base frame; resolve only physical tool or camera mounts.
             # RoboGUI scene placement does not enter the embodiment model.
-            if kind == "end_effector" or (kind == "sensor" and entry.get("mount") is not None):
-                mounts[component_name] = _mount(entry.get("mount"))
+            if kind == "end_effector" or (kind == "sensor" and component["mount"] is not None):
+                if component["mount"] is None:
+                    raise ValueError(
+                        f"{component_name}: physical mount is required; bind component_mounts"
+                    )
+                mounts[component_name] = _mount(component["mount"])
             if kind == "arm":
                 arm_models[component_name] = factory.load_model(**component["options"])
             elif kind == "end_effector":
@@ -585,7 +741,6 @@ class RobotModel:
                     base_frame=f"{component_name}.base",
                     tcp_frame=f"{component_name}.tcp",
                 )
-            components[component_name] = component
         groups, used_arms, used_tools = {}, set(), set()
         for group_name, group in spec["groups"].items():
             arm_name, tool_name = group["arm"], group.get("end_effector")
@@ -652,13 +807,12 @@ class RobotModel:
                 q.setflags(write=False)
                 home_joints[group_name] = q
         kin = RobotKinematics({key: value.kinematics for key, value in groups.items()})
-        contract = assembly_action_contract(source)
         layouts = (
             group_layouts({name: model.num_coordinates for name, model in kin.models.items()},
                          contract) if contract else {}
         )
         return cls(
-            name,
+            spec["name"],
             MappingProxyType(groups),
             kin,
             MappingProxyType(components),

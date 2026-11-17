@@ -2,6 +2,7 @@
 
 import time
 import uuid
+from copy import deepcopy
 
 import numpy as np
 
@@ -187,9 +188,13 @@ class StarVlaPolicyModel:
         source = request.aac_robot_config
         if not source:
             raise ValueError("AAC requires the configured offline robot geometry")
-        if self._aac_robot_config != source:
-            self._aac_kinematics = RobotModel.from_config(source).kinematics
-            self._aac_robot_config = source
+        geometry = {
+            "config": source,
+            "options": {"component_mounts": getattr(request, "aac_component_mounts", None)},
+        }
+        if self._aac_robot_config != geometry:
+            self._aac_kinematics = RobotModel.from_robot_config(geometry).kinematics
+            self._aac_robot_config = deepcopy(geometry)
         candidates = [self.codec.decode(rows)["actions"] for rows in actions]
         stats = load_ee_action_stats(request.aac_ee_stats_path, layouts=self.codec.layouts)
         groups, selection, self._aac_previous = select_ee_chunk(

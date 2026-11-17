@@ -28,7 +28,7 @@ class Pi05YamEefAdapter(PolicyAdapter):
         self.kin = (
             kinematics
             if kinematics is not None
-            else RobotModel.from_config(robot["config"]).kinematics
+            else RobotModel.from_robot_config(robot).kinematics
         )
         self.groups = ("left_arm", "right_arm")
         self.dt = round(policy["action_dt_s"] * 1e9)

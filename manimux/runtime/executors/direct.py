@@ -4,7 +4,12 @@ import math
 
 import numpy as np
 
-from manimux.runtime.executors.limits import ScalarLimits, limit_step, limit_velocity
+from manimux.runtime.executors.limits import (
+    ScalarLimits,
+    limit_step,
+    limit_velocity,
+    motion_sections,
+)
 from manimux.types import ActionHorizon, GroupVector, RobotCommand, RobotState, copy_group_vector
 
 
@@ -41,6 +46,18 @@ class DirectExecutor:
         self._dt_s = control_dt_s
 
     def reset(self, state: RobotState) -> None:
+        if self._motion is not None and self._motion.get("joint_tool") is not None:
+            tools = self._motion["joint_tool"]
+            if set(tools["group_slices"]) - state.groups.keys():
+                raise ValueError("joint tool motion groups are absent from robot state")
+            for name, values in state.groups.items():
+                motion_sections(
+                    name,
+                    len(values),
+                    ScalarLimits(None, None, None),
+                    self._motion["gripper"]["group_indices"].get(name),
+                    tools,
+                )
         self.gripper_clip_diagnostics = {}
         self._previous = copy_group_vector(state.groups)
         self._previous_velocity = {
@@ -78,6 +95,7 @@ class DirectExecutor:
                     self._motion["arm"]["max_step_dt_s"],
                 ),
                 gripper_indices=self._motion["gripper"]["group_indices"],
+                joint_tool=self._motion.get("joint_tool"),
             )
             gripper = self._motion["gripper"]
             for name, index in gripper["group_indices"].items():

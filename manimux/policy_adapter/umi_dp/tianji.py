@@ -100,7 +100,7 @@ class UmiDpTianjiAdapter(PolicyAdapter):
 
             if robot.get("config") is None:
                 raise ValueError("UMI Tianji requires robot.config or assembled kinematics")
-            self.robot_kinematics = RobotModel.from_config(robot["config"]).kinematics
+            self.robot_kinematics = RobotModel.from_robot_config(robot).kinematics
         self.kin = {}
         self.ik_backend = policy["adapter"].get("ik_backend", "analytic")
         if self.ik_backend not in {"analytic", "diff"}:

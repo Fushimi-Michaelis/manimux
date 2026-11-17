@@ -1,5 +1,17 @@
 # Third-party notices
 
+## Wuji Hand 2.2 model assets
+
+`manimux/embodiments/end_effector/wuji/assets/hand2_2/` contains the standalone
+left/right URDFs and referenced STL meshes from
+`wuji-technology/wuji-description`, tag `v2026.10.12`, revision
+`829c9aa27cb12c3a49d5b8d63c9869dd8f656702`, `hand2/hand2_2/body/`.
+Copyright (c) 2025 Wuji Technology, MIT; the original notice is retained at
+`manimux/embodiments/end_effector/wuji/assets/LICENSE.txt`.
+Only XML formatting and mesh paths are changed; meshes and joint geometry
+remain unchanged. Source hashes and coordinate/TCP mapping are recorded in
+the assets directory. The models are not measured Tianji mounting or payload
+calibration. The separately installed Wuji SDK is not vendored.
 ## Flexiv Rizon4s model assets
 
 `manimux/embodiments/arm/flexiv/model.urdf` and `meshes/` contain the generated

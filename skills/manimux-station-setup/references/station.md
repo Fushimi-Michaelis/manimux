@@ -62,6 +62,8 @@ configuration directory.
 | --- | --- | --- |
 | YAM CAN | `robot.components.left_yam.channel` / `right_yam.channel` | Actual Linux CAN interface, such as `can0` / `can1` |
 | Tianji shared controller | `robot.hardware.ip` | Controller IP; the two arms share the connection |
+| Tianji-Wuji hand | `robot.components.<side>_hand` | Exact serial, expected hardware version, explicit MIT gains and current limits |
+| Physical tool mount | `robot.mounts.<component>` | Flange-to-tool `xyz` metres / `rpy` radians for assemblies accepting `component_mounts` |
 | USB camera | `robot.components.<component>.camera_serial` | Camera serial number |
 | TacCap gripper | `robot.components.<component>.serial` | Gripper serial number |
 | Component using a serial port | `robot.components.<component>.port` | The component's `/dev/tty…` or stable device path |
@@ -79,6 +81,11 @@ configuration directory.
 Only fill in fields the selected component actually uses. YAM's integrated gripper shares
 its arm's CAN connection: configure `left_yam` and `right_yam`, without a separate gripper.
 Tianji's controller IP and the TacCap gripper/camera serials are independent bindings.
+Tianji-Wuji has separate right-only/dual templates and an
+[assembly contract](../../manimux-development/references/tianji-wuji.md). Its required
+physical mounts are not RoboGUI display placement. Keep only selected component
+names; the loader rejects unknown mount bindings. Execution flags remain in the
+experiment, and the template's null fields require actual installation values.
 
 `left_yam` is a component name in the robot assembly; `can_left` is an operating-system
 interface name. The loader passes the latter to `YamController(channel=...)`, then to
@@ -226,7 +233,7 @@ Binding a station does not switch these experiment settings.
 | XR-1 Tianji launcher | Uses the selected station's policy service, checkpoint, normalization and optional processor bindings |
 | Camera `--camera-config` | Reads a camera-only component recipe and selected station bindings |
 | UMI_DP standalone `--config` | Reads that standalone server configuration; use `--experiment` for shared station bindings |
-| RoboGUI process | Still uses its own launch options for network addresses and the web port |
+| RoboGUI process | Explicit `--local` loads `robot.mounts` for offline geometry; no implicit station read. Network addresses and web port still use its own launch options |
 | Other model launchers | Follow their model runbooks; this change does not add shared station loading to every launcher |
 
 UMI_DP's `--bind-runtime-config` generates a paired runtime and server configuration.

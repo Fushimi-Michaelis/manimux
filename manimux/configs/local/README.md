@@ -6,6 +6,9 @@ service addresses, checkpoint paths and configuration inspection.
 - `yam_example.yaml`: YAM with the configured camera services.
 - `franka_example.yaml`: Franka FR3 controller and Robotiq gripper.
 - `tianji_taccap_example.yaml`: Tianji controller and TacCap components.
+- `tianji_wuji_right_example.yaml` / `tianji_wuji_example.yaml`: right-only / dual
+  Wuji component bindings and required measured `robot.mounts`; see the
+  [assembly contract](../../../.agents/skills/manimux-development/references/tianji-wuji.md).
 - `piper_example.yaml`: standard PiPER CAN and measured width calibration.
 - `arx_x5_example.yaml`: X5 (2023) CAN, separate encoder/command calibration and
   explicit SDK polling selection. See [SDK adapter limits](../../../skills/manimux-station-setup/references/can-arms.md).

@@ -103,7 +103,7 @@ def load_local(path: str | Path) -> dict:
     bindings = read_yaml(source)
     # Retain the existing boundary check so misplaced execution flags are not ignored.
     extra = set(bindings) - {"robot", "services", "paths"}
-    extra |= set(bindings.get("robot", {})) - {"hardware", "components"}
+    extra |= set(bindings.get("robot", {})) - {"hardware", "components", "mounts"}
     if extra:
         raise ValueError(f"unsupported local bindings: {sorted(extra)}")
     # Resolve paths beside the station file; components interpret device parameters.
@@ -224,6 +224,7 @@ def bind_station(config: dict, local: str | Path) -> dict:
     robot = raw.setdefault("robot", {})
     hardware = bindings.get("robot", {}).get("hardware", {})
     components = bindings.get("robot", {}).get("components", {})
+    mounts = bindings.get("robot", {}).get("mounts", {})
     services = bindings.get("services", {})
     paths = bindings.get("paths", {})
     options = robot.setdefault("options", {})
@@ -233,6 +234,8 @@ def bind_station(config: dict, local: str | Path) -> dict:
         options["component_hardware"] = _merge(
             options.get("component_hardware", {}), components
         )
+    if mounts:
+        options["component_mounts"] = _merge(options.get("component_mounts", {}), mounts)
     for sensor in raw.get("sensors", []):
         service = sensor.get("service")
         if service in services:
@@ -768,12 +771,21 @@ def load_config(path: str | Path, *, local: str | Path | None = None) -> dict:
     config_path = Path(path)
     raw = read_experiment(config_path, local=local)
     gripper_indices = action_contract_group_indices(raw)
+    from manimux.embodiments.layout import apply_executor_layout, group_layouts
+
+    layouts = (
+        group_layouts(raw["robot"]["group_dims"], raw["robot"])
+        if raw.get("robot", {}).get("group_layouts") is not None else None
+    )
     # read_experiment has resolved file references; combine shared control and experiment parameters here.
     robot = raw["robot"] = shared_robot_parameters(**raw.get("robot", {}))
     profile = None
     if raw.get("control_profile") is not None:
+        from manimux.configuration import compose
+
         profile_path = Path(raw["control_profile"])
-        profile_raw = read_yaml(profile_path)
+        profile_raw, profile_sources = compose(profile_path)
+        raw["config_sources"].update(profile_sources)
         if profile_raw.get("rate_contract") is not None:
             from manimux.embodiments.arm.tianji.arm import resolve_rate_contract
 
@@ -782,7 +794,12 @@ def load_config(path: str | Path, *, local: str | Path | None = None) -> dict:
                 assembly.get("hardware", {}),
                 raw.get("robot", {}).get("options", {}).get("hardware", {}),
             )
-            profile_raw = resolve_rate_contract(profile_raw, controller, gripper_indices)
+            if "joint_tool" in profile_raw["rate_contract"]:
+                from manimux.configuration import joint_tool_rate_contract
+
+                profile_raw = joint_tool_rate_contract(profile_raw, controller, layouts)
+            else:
+                profile_raw = resolve_rate_contract(profile_raw, controller, gripper_indices)
         if gripper_indices is not None and profile_raw.get("motion_limits") is not None:
             profile_gripper = profile_raw["motion_limits"].setdefault("gripper", {})
             _set_shared_value(
@@ -791,6 +808,11 @@ def load_config(path: str | Path, *, local: str | Path | None = None) -> dict:
                 deepcopy(gripper_indices),
                 "control_profile.motion_limits.gripper.group_indices",
             )
+        if layouts is not None and profile_raw.get("motion_limits") is not None:
+            apply_executor_layout({
+                "type": raw.get("executor", {}).get("type", "smooth"),
+                "motion_limits": profile_raw["motion_limits"],
+            }, layouts)
         profile = control_profile_parameters(**profile_raw)
         raw["control_profile"] = profile_path
         robot = raw.setdefault("robot", {})
@@ -820,14 +842,28 @@ def load_config(path: str | Path, *, local: str | Path | None = None) -> dict:
                 "executor.motion_limits",
             )
     execution = raw.get("executor", {})
+    if layouts is not None:
+        apply_executor_layout(execution, layouts, require_joint_tools=True)
     if execution.get("motion_limits") is not None:
         motion = motion_limits_parameters(**execution["motion_limits"])
         smooth = execution.setdefault("smooth", {})
         for name, value in deepcopy(motion["arm"]).items():
             _set_shared_value(smooth, name, value, f"executor.smooth.{name}")
-        gripper = smooth.setdefault("gripper", {"mode": "continuous"})
-        for name, value in deepcopy(motion["gripper"]).items():
-            _set_shared_value(gripper, name, value, f"executor.smooth.gripper.{name}")
+        if motion["gripper"].get("group_indices") or layouts is None:
+            gripper = smooth.setdefault("gripper", {"mode": "continuous"})
+            for name, value in deepcopy(motion["gripper"]).items():
+                _set_shared_value(gripper, name, value, f"executor.smooth.gripper.{name}")
+        elif smooth.get("gripper") is not None:
+            raise ValueError("executor.smooth.gripper requires scalar gripper coordinates")
+        if motion.get("joint_tool") is not None:
+            from manimux.runtime.executors.limits import joint_tool_motion_parameters
+
+            if smooth.get("joint_tool") is not None:
+                smooth["joint_tool"] = joint_tool_motion_parameters(**smooth["joint_tool"])
+            _set_shared_value(
+                smooth, "joint_tool", deepcopy(motion["joint_tool"]),
+                "executor.smooth.joint_tool",
+            )
     resolved = prepare_experiment(**raw)
     gripper = (
         resolved["executor"]["smooth"].get("gripper")

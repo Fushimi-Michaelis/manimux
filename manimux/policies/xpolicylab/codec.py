@@ -4,8 +4,8 @@ These are pure functions over numpy so that the mapping -- the part that is easy
 to get subtly wrong -- can be unit tested without a server, a robot, or the
 msgpack/websockets dependencies.
 
-XPolicyLab splits an arm from its gripper; ManiMux carries one named group per
-arm with the gripper as its trailing value(s). ``GroupLayout`` is the whole of
+XPolicyLab splits an arm from its end effector; ManiMux carries one named group
+per arm with the tool as its trailing coordinates. ``GroupLayout`` describes
 that difference, and it is declared in the run config rather than inferred.
 
 The observation dictionary follows XPolicyLab's ``data_format_version`` ``v1.0``::
@@ -41,22 +41,29 @@ DATA_FORMAT_VERSION = "v1.0"
 
 @dataclass(frozen=True, slots=True)
 class GroupLayout:
-    """How one ManiMux group maps onto XPolicyLab's arm/gripper key pair."""
+    """Map arm and typed tool coordinates to XPolicyLab's arm/EE key pair."""
 
     group: str
     prefix: str
     arm_dofs: int
     gripper_dofs: int
+    joint_tool_dofs: int = 0
 
     def __post_init__(self) -> None:
         if self.arm_dofs <= 0:
             raise ValueError(f"group {self.group!r} must have a positive arm_dofs")
         if self.gripper_dofs < 0:
             raise ValueError(f"group {self.group!r} cannot have negative gripper_dofs")
+        if self.joint_tool_dofs < 0 or (self.joint_tool_dofs and self.gripper_dofs):
+            raise ValueError(f"group {self.group!r} has an invalid joint tool layout")
+
+    @property
+    def ee_dofs(self) -> int:
+        return self.gripper_dofs + self.joint_tool_dofs
 
     @property
     def dim(self) -> int:
-        return self.arm_dofs + self.gripper_dofs
+        return self.arm_dofs + self.ee_dofs
 
     @property
     def arm_key(self) -> str:
@@ -91,7 +98,7 @@ def encode_observation(
                 f"group {layout.group!r} must have {layout.dim} values, got {values.shape}"
             )
         state[layout.arm_key] = np.asarray(values[: layout.arm_dofs], dtype=np.float32)
-        if layout.gripper_dofs:
+        if layout.ee_dofs:
             state[layout.gripper_key] = np.asarray(values[layout.arm_dofs :], dtype=np.float32)
 
     vision: dict[str, Any] = {}
@@ -143,8 +150,8 @@ def decode_action_steps(
             raise ValueError(f"XPolicyLab action step {index} is not a mapping")
         for layout in layouts:
             parts = [_step_value(step, layout.arm_key, layout.arm_dofs, index)]
-            if layout.gripper_dofs:
-                parts.append(_step_value(step, layout.gripper_key, layout.gripper_dofs, index))
+            if layout.ee_dofs:
+                parts.append(_step_value(step, layout.gripper_key, layout.ee_dofs, index))
             columns[layout.group].append(np.concatenate(parts))
 
     groups: dict[str, FloatArray] = {}
@@ -157,11 +164,15 @@ def decode_action_steps(
 
 
 def _step_value(step: Mapping[str, Any], key: str, dofs: int, index: int) -> FloatArray:
+    if not isinstance(step, Mapping) or key not in step:
+        raise ValueError(f"XPolicyLab action step {index} is missing key {key!r}")
     values = np.asarray(step[key], dtype=np.float64).reshape(-1)
     if values.size != dofs:
         raise ValueError(
             f"XPolicyLab action step {index} key {key!r} must have {dofs} values, got {values.size}"
         )
+    if not np.isfinite(values).all():
+        raise ValueError(f"XPolicyLab action step {index} key {key!r} must be finite")
     return values
 
 
@@ -222,8 +233,13 @@ def _layouts_from_options(
     layouts = group_layouts(group_dims, options)
     prefixes = options.get("group_prefixes", DEFAULT_GROUP_PREFIXES)
     return tuple(
-        # XPolicyLab's standard single-arm schema has no side/group prefix.
-        GroupLayout(name, "" if len(layouts) == 1 else prefixes[name], **layouts[name])
+        # Standard single-arm grippers use unprefixed keys. Explicit joint-tool
+        # layouts retain their configured side, including right-only assemblies.
+        GroupLayout(
+            name,
+            prefixes[name] if len(layouts) > 1 or layouts[name].get("joint_tool_dofs") else "",
+            **layouts[name],
+        )
         for name in options.get("group_order", tuple(group_dims))
     )
 
@@ -237,7 +253,7 @@ def decode_policy_actions(raw, *, layouts, format):
     if format == "joint":
         groups = decode_action_steps(steps, layouts=layouts)
     elif format == "pose":
-        if not isinstance(steps, Sequence) or not steps:
+        if not isinstance(steps, Sequence) or isinstance(steps, str | bytes) or not steps:
             raise ValueError("pose actions must contain per-step dictionaries")
         groups = {}
         for layout in layouts:
@@ -246,8 +262,8 @@ def decode_policy_actions(raw, *, layouts, format):
             for index, step in enumerate(steps):
                 pose = _step_value(step, pose_key, 7, index)
                 tool = (
-                    _step_value(step, layout.gripper_key, layout.gripper_dofs, index)
-                    if layout.gripper_dofs
+                    _step_value(step, layout.gripper_key, layout.ee_dofs, index)
+                    if layout.ee_dofs
                     else np.empty(0)
                 )
                 rows.append(np.r_[pose, tool])

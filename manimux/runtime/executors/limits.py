@@ -25,6 +25,27 @@ class ScalarLimits:
         return self.max_velocity * min(dt_s, self.max_step_dt_s) / dt_s
 
 
+def motion_sections(
+    group: str,
+    width: int,
+    limits: ScalarLimits,
+    gripper_index: int | None,
+    joint_tool: dict | None,
+) -> list[tuple[slice, ScalarLimits, int | None]]:
+    """Keep isotropic arm limits independent of a trailing joint tool."""
+    bounds = (joint_tool or {}).get("group_slices", {}).get(group)
+    if bounds is None:
+        return [(slice(None), limits, gripper_index)]
+    start, stop = bounds
+    if start <= 0 or stop != width or gripper_index is not None:
+        raise ValueError(f"{group}: joint tool slice does not match the grouped coordinates")
+    tool_limits = ScalarLimits(
+        joint_tool["max_velocity"], joint_tool["max_acceleration"],
+        joint_tool["position_limit_abs"], joint_tool["mode"], joint_tool["max_step_dt_s"],
+    )
+    return [(slice(0, start), limits, None), (slice(start, stop), tool_limits, None)]
+
+
 def _scale_vector(values: np.ndarray, bound: float, independent_index: int | None) -> np.ndarray:
     """One scale per arm; an embedded gripper never determines that scale."""
     arm = values if independent_index is None else np.delete(values, independent_index)
@@ -102,7 +123,11 @@ def braking_velocity(distance: np.ndarray, acceleration: float, dt_s: float) -> 
     distance = np.maximum(distance, 0.0)
     step = acceleration * dt_s
     # Rationalized form avoids cancellation very close to the target.
-    return 2 * acceleration * distance / (np.sqrt(step * step + 2 * acceleration * distance) + step)
+    with np.errstate(invalid="ignore"):
+        speed = 2 * acceleration * distance / (
+            np.sqrt(step * step + 2 * acceleration * distance) + step
+        )
+    return np.where(np.isposinf(distance), np.inf, speed)
 
 
 def bounded_step(
@@ -164,6 +189,7 @@ def tracking_step(
     position_gain: float,
     limits: ScalarLimits,
     gripper_indices: dict[str, int] | None = None,
+    joint_tool: dict | None = None,
 ) -> tuple[GroupVector, GroupVector]:
     """Track a moving reference with feedforward and distance-aware braking.
 
@@ -173,52 +199,41 @@ def tracking_step(
     without the legacy repeated overshoot. This is not jerk-limited planning.
     """
     output, velocities = {}, {}
-    acceleration = limits.max_acceleration
-    max_velocity = limits.velocity_bound(dt_s)
-    bound = limits.position_limit_abs
-    assert bound is not None
     for name, desired in target.items():
-        independent_index = (gripper_indices or {}).get(name)
-        error = np.clip(desired, -bound, bound) - previous[name]
-        correction = position_gain * error
-        if acceleration is not None:
-            correction = np.sign(error) * np.minimum(
-                np.abs(correction), braking_velocity(np.abs(error), acceleration, dt_s)
+        output[name], velocities[name] = np.empty_like(desired), np.empty_like(desired)
+        for part, selected, independent_index in motion_sections(
+            name, len(desired), limits, (gripper_indices or {}).get(name), joint_tool
+        ):
+            acceleration = selected.max_acceleration
+            max_velocity = selected.velocity_bound(dt_s)
+            bound = selected.position_limit_abs
+            bound = np.inf if bound is None else bound
+            error = np.clip(desired[part], -bound, bound) - previous[name][part]
+            correction = position_gain * error
+            if acceleration is not None:
+                correction = np.sign(error) * np.minimum(
+                    np.abs(correction), braking_velocity(np.abs(error), acceleration, dt_s)
+                )
+            velocity = limit_velocity(
+                target_velocity[name][part], previous_velocity[name][part], dt_s,
+                max_velocity, None, mode=selected.mode, independent_index=independent_index,
+            ) + correction
+            if acceleration is None:
+                lower = (-bound - previous[name][part]) / dt_s
+                upper = (bound - previous[name][part]) / dt_s
+            else:
+                lower = -braking_velocity(previous[name][part] + bound, acceleration, dt_s)
+                upper = braking_velocity(bound - previous[name][part], acceleration, dt_s)
+            if max_velocity is not None and selected.mode == "per_joint":
+                lower = np.maximum(lower, -max_velocity)
+                upper = np.minimum(upper, max_velocity)
+            velocity = limit_velocity(
+                np.clip(velocity, lower, upper), previous_velocity[name][part], dt_s,
+                max_velocity if selected.mode == "isotropic" else None, acceleration,
+                mode=selected.mode, independent_index=independent_index,
             )
-        velocity = (
-            limit_velocity(
-                target_velocity[name],
-                previous_velocity[name],
-                dt_s,
-                max_velocity,
-                None,
-                mode=limits.mode,
-                independent_index=independent_index,
-            )
-            + correction
-        )
-        # Also start braking before the absolute position limits.
-        if acceleration is None:
-            lower = (-bound - previous[name]) / dt_s
-            upper = (bound - previous[name]) / dt_s
-        else:
-            lower = -braking_velocity(previous[name] + bound, acceleration, dt_s)
-            upper = braking_velocity(bound - previous[name], acceleration, dt_s)
-        if max_velocity is not None and limits.mode == "per_joint":
-            lower = np.maximum(lower, -max_velocity)
-            upper = np.minimum(upper, max_velocity)
-        velocity = np.clip(velocity, lower, upper)
-        velocity = limit_velocity(
-            velocity,
-            previous_velocity[name],
-            dt_s,
-            max_velocity if limits.mode == "isotropic" else None,
-            acceleration,
-            mode=limits.mode,
-            independent_index=independent_index,
-        )
-        output[name] = previous[name] + velocity * dt_s
-        velocities[name] = velocity
+            output[name][part] = previous[name][part] + velocity * dt_s
+            velocities[name][part] = velocity
     return output, velocities
 
 
@@ -230,28 +245,42 @@ def limit_step(
     dt_s: float,
     limits: ScalarLimits,
     gripper_indices: dict[str, int] | None = None,
+    joint_tool: dict | None = None,
 ) -> tuple[GroupVector, GroupVector]:
     output: GroupVector = {}
     velocities: GroupVector = {}
     for name, desired in target.items():
-        velocity = limit_velocity(
-            (desired - previous[name]) / dt_s,
-            previous_velocity[name],
-            dt_s,
-            limits.velocity_bound(dt_s),
-            limits.max_acceleration,
-            mode=limits.mode,
-            independent_index=(gripper_indices or {}).get(name),
-        )
-        command = (
-            desired.copy()
-            if limits.max_velocity is None and limits.max_acceleration is None
-            else previous[name] + velocity * dt_s
-        )
-        if limits.position_limit_abs is not None:
-            command = np.clip(command, -limits.position_limit_abs, limits.position_limit_abs)
-        output[name] = command
-        velocities[name] = velocity
+        output[name], velocities[name] = np.empty_like(desired), np.empty_like(desired)
+        for part, selected, independent_index in motion_sections(
+            name, len(desired), limits, (gripper_indices or {}).get(name), joint_tool
+        ):
+            velocity = limit_velocity(
+                (desired[part] - previous[name][part]) / dt_s,
+                previous_velocity[name][part], dt_s, selected.velocity_bound(dt_s),
+                selected.max_acceleration, mode=selected.mode, independent_index=independent_index,
+            )
+            command = (
+                desired[part].copy()
+                if selected.max_velocity is None and selected.max_acceleration is None
+                else previous[name][part] + velocity * dt_s
+            )
+            if selected.position_limit_abs is not None:
+                bound = selected.position_limit_abs
+                if part.start is None:
+                    command = np.clip(command, -bound, bound)
+                else:
+                    # New coordinate partitions retain actual emitted velocity
+                    # and reject infeasible braking instead of clipping history.
+                    command, velocity = bounded_step(
+                        command, previous[name][part], previous_velocity[name][part],
+                        dt_s=dt_s, lower=np.full_like(command, -bound),
+                        upper=np.full_like(command, bound),
+                        max_velocity=np.full_like(command, selected.velocity_bound(dt_s) or np.inf),
+                        max_acceleration=np.full_like(command, selected.max_acceleration or np.inf),
+                        group=name,
+                    )
+            output[name][part] = command
+            velocities[name][part] = velocity
     return output, velocities
 
 
@@ -302,4 +331,33 @@ def motion_limits_parameters(**options) -> dict:
     }
     values["arm"] = arm_motion_parameters(**values["arm"])
     values["gripper"] = gripper_motion_parameters(**values["gripper"])
+    if values.get("joint_tool") is not None:
+        values["joint_tool"] = joint_tool_motion_parameters(**values["joint_tool"])
+    return values
+
+
+def joint_tool_motion_parameters(**options) -> dict:
+    """Resolve explicit joint-tool slices and rates without gripper normalization."""
+    from manimux.config_validation import check_fields
+
+    check_fields(options, {
+        "group_slices", "max_velocity", "max_acceleration", "position_limit_abs",
+        "mode", "max_step_dt_s",
+    }, "joint_tool")
+    values = arm_motion_parameters(**{"position_limit_abs": None, **options})
+    slices = values.get("group_slices", {})
+    if not isinstance(slices, dict) or not slices or any(
+        not isinstance(name, str) or not name.strip()
+        or not isinstance(bounds, list | tuple) or len(bounds) != 2
+        or any(type(index) is not int for index in bounds)
+        or not 0 < bounds[0] < bounds[1]
+        for name, bounds in slices.items()
+    ):
+        raise ValueError(
+            "joint_tool.group_slices must contain non-empty trailing coordinate ranges"
+        )
+    bound = values["position_limit_abs"]
+    if bound is not None and (not math.isfinite(bound) or bound <= 0):
+        raise ValueError("joint tool position_limit_abs must be finite and positive")
+    values["group_slices"] = {name: list(bounds) for name, bounds in slices.items()}
     return values

@@ -30,6 +30,8 @@ class PoseAdapter(KinematicAdapter):
     Tool deltas right-multiply the observation TCP transform. Observation deltas
     share one anchor across the chunk. Per-step feedback deltas retain one row:
     future measured poses are unavailable when decoding a complete chunk.
+    Trailing tool targets are always absolute: a normalized scalar opening or
+    explicitly declared joint-tool positions in radians, fixed during arm IK.
     """
 
     supports_context_only_decode = True
@@ -44,8 +46,25 @@ class PoseAdapter(KinematicAdapter):
         if self.gripper_output not in {"reject", "clip"}:
             raise ValueError("Pose gripper_output must be reject or clip")
         self.layouts = group_layouts(robot["group_dims"], options)
-        if any(layout["gripper_dofs"] not in (0, 1) for layout in self.layouts.values()):
-            raise ValueError("PoseAdapter supports zero or one normalized gripper per arm")
+        if any(
+            layout["gripper_dofs"] not in (0, 1)
+            for layout in self.layouts.values()
+        ):
+            raise ValueError("PoseAdapter requires a scalar gripper or an explicit joint tool")
+        self.supports_step_ik = not any(
+            layout.get("joint_tool_dofs") for layout in self.layouts.values()
+        )
+        self.supported_sampling_modes = (
+            None if self.supports_step_ik else frozenset({"default"})
+        )
+        self.pose_condition_modes = ("rtc",) if self.supports_step_ik else ()
+        self.tool_slices = {
+            group: slice(layout["arm_dofs"], robot["group_dims"][group])
+            for group, layout in self.layouts.items()
+        }
+        self.pose_dims = {
+            group: 7 + part.stop - part.start for group, part in self.tool_slices.items()
+        }
         self.prefixes = options["group_prefixes"]
         parallel = options.get("parallel_ik", False)
         if type(parallel) is not bool:
@@ -53,10 +72,14 @@ class PoseAdapter(KinematicAdapter):
         if parallel and policy.get("action_decoding", "inline") != "process":
             raise ValueError("parallel_ik requires process action decoding")
         self.decode_partitions = tuple(self.layouts) if parallel else ()
-        expected = {""} if len(self.layouts) == 1 else {"left", "right"}
-        if set(self.prefixes) != set(self.layouts) or set(self.prefixes.values()) != expected:
+        prefixes = tuple(self.prefixes.values())
+        if (
+            set(self.prefixes) != set(self.layouts)
+            or any(not isinstance(prefix, str) for prefix in prefixes)
+            or len(set(prefixes)) != len(prefixes)
+        ):
             raise ValueError(
-                "group_prefixes must map one group to an empty prefix, or two groups to left/right"
+                "group_prefixes must map every group to a unique string prefix"
             )
         self.semantics = options["action_semantics"]
         if self.semantics not in {
@@ -66,6 +89,10 @@ class PoseAdapter(KinematicAdapter):
             "delta_step_base_xyz_wxyz",
         }:
             raise ValueError("Unsupported pose action_semantics")
+        if not self.supports_step_ik and self.semantics == "delta_step_base_xyz_wxyz":
+            raise ValueError(
+                "Joint-tool poses support absolute or observation-relative chunk semantics only"
+            )
         self.supports_context_only_decode = self.semantics != "delta_step_base_xyz_wxyz"
         self.decode_seed_source = (
             "observation_state"
@@ -94,10 +121,15 @@ class PoseAdapter(KinematicAdapter):
         self.required_cameras = tuple(options.get("camera_map", {}).values())
         for group, dim in robot["group_dims"].items():
             coordinates = self.kinematics.models[group].coordinates
-            has_gripper = self.layouts[group]["gripper_dofs"] == 1
-            if len(coordinates) != dim or (has_gripper and coordinates[-1].unit != "normalized"):
+            tool = coordinates[self.tool_slices[group]]
+            unit = "normalized" if self.layouts[group]["gripper_dofs"] else "rad"
+            if (
+                len(coordinates) != dim
+                or len({coordinate.name for coordinate in coordinates}) != dim
+                or any(coordinate.unit != unit for coordinate in tool)
+            ):
                 raise ValueError(
-                    f"{group} geometry must match the declared arm/tool coordinate layout"
+                    f"{group} requires matching geometry with trailing tool units {unit!r}"
                 )
         pose_frame = options.get("pose_frame", "tcp")
         if pose_frame not in {"tcp", "flange"}:
@@ -124,6 +156,7 @@ class PoseAdapter(KinematicAdapter):
                     or (self.layouts[group]["gripper_dofs"] == 1 and not 0 <= q[-1] <= 1)
                 ):
                     raise ValueError(f"Invalid ik_warmup_joints for {group}")
+                self._fixed_tool(group, q[self.tool_slices[group]])
                 self._warmup_joints[group] = q
             if policy.get("action_decoding", "inline") == "inline":
                 self.warmup_decode(None)
@@ -141,14 +174,20 @@ class PoseAdapter(KinematicAdapter):
             result = model.ik(
                 model.fk(seed),
                 seed.copy(),
-                fixed_coordinates=(
-                    {model.coordinates[-1].name: float(seed[-1])}
-                    if self.layouts[group]["gripper_dofs"]
-                    else {}
-                ),
+                fixed_coordinates=self._fixed_tool(group, seed[self.tool_slices[group]]),
             )
             if not result.converged:
                 raise ValueError(f"Pose IK warmup failed: group={group} reason={result.reason}")
+
+    def _fixed_tool(self, group, values):
+        """Name all tool coordinates; never normalize revolute tool positions."""
+        if self.layouts[group]["gripper_dofs"] and not 0 <= values[0] <= 1:
+            raise ValueError("Pose gripper must be a normalized opening in [0, 1]")
+        coordinates = self.kinematics.models[group].coordinates[self.tool_slices[group]]
+        return {
+            coordinate.name: float(value)
+            for coordinate, value in zip(coordinates, values, strict=True)
+        }
 
     def build_observation(self, snapshot):
         missing = set(self.required_cameras) - set(snapshot.frames)
@@ -215,11 +254,9 @@ class PoseAdapter(KinematicAdapter):
         return self._decode_action(raw, context, (partition,))
 
     def _decode_action(self, raw, context, selected_groups):
-        actions = action_groups(
-            raw,
-            {group: 7 + layout["gripper_dofs"] for group, layout in self.layouts.items()},
-            format="pose",
-        )
+        if self.decode_pose_only and not self.supports_step_ik:
+            raise ValueError("Joint-tool poses require chunk IK; step IK is not supported")
+        actions = action_groups(raw, self.pose_dims, format="pose")
         if raw.get("action_semantics", self.semantics) != self.semantics:
             raise ValueError("Pose action semantics mismatch")
         if any(len(rows) != self.horizon for rows in actions.values()):
@@ -253,14 +290,10 @@ class PoseAdapter(KinematicAdapter):
             )
             sequence = self.ik_sequence(group, seed)
             solved = []
-            for row in rows[: self.decode_steps]:
+            for step, row in enumerate(rows[: self.decode_steps]):
                 target = pose_matrix(row[:7])
-                fixed = {}
-                if self.layouts[group]["gripper_dofs"]:
-                    aperture = float(row[7])
-                    if not 0 <= aperture <= 1:
-                        raise ValueError("Pose gripper must be a normalized opening in [0, 1]")
-                    fixed[model.coordinates[-1].name] = aperture
+                tool = row[7:]
+                fixed = self._fixed_tool(group, tool)
                 if self.semantics == "delta_observation_tool_xyz_wxyz":
                     target = anchor @ target
                 elif self.semantics in {
@@ -272,14 +305,16 @@ class PoseAdapter(KinematicAdapter):
                 if self.decode_pose_only:
                     if not self.layouts[group]["gripper_dofs"]:
                         raise ValueError("Pose-only decoding requires a normalized gripper")
-                    solved.append(np.r_[matrix_pose(target), aperture])
+                    solved.append(np.r_[matrix_pose(target), tool])
                     continue
-                result = model.ik(
-                    target,
-                    sequence.current,
-                    fixed_coordinates=fixed,
-                )
+                result = model.ik(target, sequence.current, fixed_coordinates=fixed)
                 seed = sequence.resolve(result.converged, result.joints, reason=result.reason)
+                if not sequence.last_failed and not np.array_equal(
+                    seed[self.tool_slices[group]], tool
+                ):
+                    raise ValueError(
+                        f"Pose IK changed fixed coordinates: group={group} step={step}"
+                    )
                 solved.append(seed)
             diagnostics[group] = sequence.metadata()
             groups[group] = np.asarray(solved)

@@ -1,0 +1,17 @@
+# Copy to a private station file and fill all null values from the installation.
+# mounts are flange-to-hand xyz (metres) / rpy (radians), not RoboGUI scene placement.
+# Keep execution flags and motion envelopes in the experiment/control profile.
+robot:
+  hardware:
+    ip: null
+  mounts:
+    right_hand: null
+  components:
+    right_hand:
+      serial: null
+      expected_hw_version: null
+      kp: null
+      kd: null
+      effort_limit_a: null
+services: {}
+paths: {}

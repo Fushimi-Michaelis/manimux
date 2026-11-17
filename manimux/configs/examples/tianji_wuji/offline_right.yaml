@@ -1,0 +1,23 @@
+# Config-inspection example with synthetic policy only; no hardware launch instruction.
+# build_robot additionally needs local SDK/model resources and measured mounts.
+run:
+  task_prompt: Disconnected Tianji-Wuji component verification
+robot:
+  type: manimux.embodiments.robot.tianji_wuji:create_robot
+  config: ../../embodiment/robot/tianji_wuji_right.yaml
+  options:
+    execute: false
+    end_effector_control: false
+control_profile: ../../embodiment/robot/tianji_wuji_right_control.yaml
+policy:
+  worker: fake
+  action_dt_s: 0.03333333333333333
+  horizon_policy_steps: 16
+  adapter:
+    type: manimux.policies.fake:FakePolicyAdapter
+executor:
+  config: ../../executor/tianji_wuji_direct.yaml
+
+execution:
+  ik:
+    failure_policy: reject

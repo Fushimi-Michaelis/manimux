@@ -1,6 +1,7 @@
 """BID backward coherence on serial or time-aligned asynchronous action chunks."""
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -94,6 +95,9 @@ class BidBackwardStrategy(SynchronousChunkStrategy):
             options["aac_horizon"] = {
                 **self._config["inference"]["aac"],
                 "robot_config": str(self._config["robot"]["config"]),
+                "component_mounts": deepcopy(
+                    self._config["robot"].get("options", {}).get("component_mounts")
+                ),
             }
         return options
 

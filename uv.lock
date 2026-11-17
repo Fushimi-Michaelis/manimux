@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11, <3.13"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -584,14 +584,14 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-omnigripper = [
-    { name = "pyserial" },
-]
 dream = [
     { name = "dreamlabs-client" },
 ]
 franka = [
     { name = "pylibfranka" },
+]
+omnigripper = [
+    { name = "pyserial" },
 ]
 realsense = [
     { name = "pyrealsense2" },
@@ -609,6 +609,9 @@ starvla = [
 ]
 tianji-diff-ik = [
     { name = "osqp" },
+]
+wuji = [
+    { name = "wuji-sdk" },
 ]
 xpolicylab = [
     { name = "msgpack" },
@@ -647,10 +650,11 @@ requires-dist = [
     { name = "viser", specifier = ">=1.0.30" },
     { name = "websockets", marker = "extra == 'starvla'", specifier = ">=15" },
     { name = "websockets", marker = "extra == 'xpolicylab'", specifier = ">=14" },
+    { name = "wuji-sdk", marker = "extra == 'wuji'", specifier = "==2026.9.22" },
     { name = "yourdfpy", specifier = ">=0.0.58" },
     { name = "zarr", specifier = ">=2.18,<3" },
 ]
-provides-extras = ["omnigripper", "franka", "robotiq", "realsense", "tianji-diff-ik", "replay", "dream", "starvla", "xpolicylab"]
+provides-extras = ["franka", "robotiq", "realsense", "wuji", "omnigripper", "tianji-diff-ik", "replay", "dream", "starvla", "xpolicylab"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1715,6 +1719,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/51/f9/4a6925a07951df56394f7e6ebe14f69f1c5ef9d87aa63e0839acf15aa63a/wrapt-2.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:cdc021cb0b62471d6aac7f2bd92f3b4658073775f9ee7fcd325c511129e7bcc8", size = 81180, upload-time = "2026-07-28T06:04:47.021Z" },
     { url = "https://files.pythonhosted.org/packages/a8/4f/8b5de0395b2a72216751d41c9861df6facaeb611b619d8810ed2b3b23eb2/wrapt-2.3.0-cp312-cp312-win_arm64.whl", hash = "sha256:67bfe2485f50368c3fcd2275fc1fd100e350d601e0058921a7c82678a465aeab", size = 80155, upload-time = "2026-07-28T06:04:48.373Z" },
     { url = "https://files.pythonhosted.org/packages/00/39/3daf9f47be208606586de4568ba6713db53ebc8fd7a575aea1fe57983b69/wrapt-2.3.0-py3-none-any.whl", hash = "sha256:d8c7ed08477429752b8c44991f40ad7838b18332a160698740a6bfbc10d998a2", size = 61866, upload-time = "2026-07-28T06:06:12.9Z" },
+]
+
+[[package]]
+name = "wuji-sdk"
+version = "2026.9.22"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/e8/7fb2a7b3bd6ff5b471c5319c322d8c39dd87e2d5624cbecea2ac2c053b85/wuji_sdk-2026.9.22-cp311-cp311-manylinux_2_34_aarch64.whl", hash = "sha256:8fd29e45018ebf2f631e5da814263df325d5dc0d1f7aff5a2e94086fdc8cfc12", size = 10552173, upload-time = "2026-09-22T13:48:09.793Z" },
+    { url = "https://files.pythonhosted.org/packages/21/e1/b1d4188e374ca282ce757641a6215ca2fa9f39dd688dc63d51e8b6d3455b/wuji_sdk-2026.9.22-cp311-cp311-manylinux_2_34_x86_64.whl", hash = "sha256:5dba8167c999e00a0480e7468a6993a49d3f66d751c54f8a6b990f24c80e0723", size = 10485211, upload-time = "2026-09-22T13:48:12.691Z" },
+    { url = "https://files.pythonhosted.org/packages/85/b2/676ff6b9bd983f67b49e4d50c78539d7efe98975834bc489c9b651c0d63e/wuji_sdk-2026.9.22-cp312-cp312-manylinux_2_34_aarch64.whl", hash = "sha256:e550939c5a4efb68581b16a7122905bb394ee8abf016f84ba1a89619567cd67f", size = 10550988, upload-time = "2026-09-22T13:48:16.248Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/a1/2ffada3ae0055b0d8864b68c24a333784b4ff2cfea299cdd28829b07a645/wuji_sdk-2026.9.22-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:1f86b22691d89510bbadbf48170ce6bedbbb32a9899f8a9b5ca6dfee49d0ec5d", size = 10481261, upload-time = "2026-09-22T13:48:19.137Z" },
 ]
 
 [[package]]

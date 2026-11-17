@@ -401,7 +401,9 @@ User operation is described in [command limits](../../../guideline.html#command-
 ## RoboGUI, replay and recording
 
 The current dashboard loads a RoboGUI YAML through `load_robogui_config()`, then
-constructs `RobotView(RobotModel.from_config(model), config)`. Start from
+`load_robot_view()` constructs a `RobotView` using `RobotModel.from_robot_config()`.
+Explicit `--local` mounts reach the same assembly resolver used by the runtime.
+Start from
 `manimux/robogui/robot_view.py` and `robogui/robots/yam/robogui.yaml`.
 A new body normally needs a `robogui/robots/<name>/robogui.yaml` pointing to its
 assembled offline model, with camera slots and per-group display styles.
@@ -477,6 +479,14 @@ before video draining or Zarr finalization. Cleanup failures must leave
 event is published when control cleanup fails. A late GUI cleanup error corrects
 the saved result without rewriting trajectories or encoding videos again.
 
+Active-rollout Home uses the runtime's `active_home_available` capability, independent
+of the idle `recovery_actions` list. Tianji-Wuji advertises no idle recovery actions,
+but can Home while the owning runtime remains ready. An assembly can declare
+`requires_release_confirmation = True`; `EdgeRuntime` then rejects `robogui.enabled:
+false` before connecting devices. Enabling the GUI does not prove a live confirmation
+channel: the existing episode/token-scoped support gate still blocks release when
+that channel is missing, stale or unconfirmed. Normal Finish is not release consent.
+
 Idle recovery between rollouts (**Clear error**, **Return Home**, **Drag**, **Release**) is
 scheduled by the `manimux run` session and implemented by the robot assembly. The
 session reads the assembly's `recovery_actions`, `hand_guiding_actions` and `drag_selections`.
@@ -523,6 +533,12 @@ the existing referenced-config loading; do not create another schema/merge syste
   Private training work stays in the ignored root `training/` workspace.
 
 In the list above, `configs/` means `manimux/configs/`.
+Control profiles also support `_base_` through the existing configuration composer.
+Paths are relative to each declaring file, and all inherited profile fingerprints
+are retained in `config_sources`. Robot type/layout conflict checks still apply.
+The disconnected Tianji-Wuji profiles inherit the production limits and change only
+the explicit robot factory; they do not maintain a second copy of the limit vectors.
+
 `policy` describes the runtime side; `policy_server` selects the model-serving side
 of the same experiment. Pair their action representation, checkpoint identity and
 sampler capabilities. Do not delete identity checks to make a mismatched pair start.
@@ -570,6 +586,13 @@ per-tick vendor branch. There is currently no general executor entry-point loade
 hardware-free display and its playback loop. The independent `python -m manimux.robogui.replay`
 entry point selects an episode and stream. Dashboard has no historical replay panel.
 Shared offline preset/model loaders live in `robot_view.py`. Keep these consumers out of the control loop.
+`--source state`, `scheduled` and `command` use recorded control-tick timestamps.
+`--source prediction --plan-index N` selects exactly one accepted plan's
+`plans/NNNNNN/canonical_raw` joint-position chunk, using its observation origin,
+source offset and policy interval. These are prediction-grid times, not execution
+or feedback times. Overlapping plans are never concatenated; pose-space chunks and
+missing/invalid plan indices are rejected. All streams use the recorded geometry
+snapshot when present and start paused without connecting hardware.
 The [research workflow](../../../guideline.html#experiments) describes current UI and identity fields.
 
 

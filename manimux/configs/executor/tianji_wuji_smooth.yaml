@@ -1,0 +1,4 @@
+# Arm/tool rates and trailing slices come from the selected control profile.
+type: smooth
+smooth:
+  cutoff_hz: 8.0

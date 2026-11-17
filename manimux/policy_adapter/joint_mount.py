@@ -32,7 +32,7 @@ class MountOffsetJointAdapter(JointAdapter):
         if kinematics is None:
             from manimux.embodiments.robot.base import RobotModel
 
-            kinematics = RobotModel.from_config(robot["config"]).kinematics
+            kinematics = RobotModel.from_robot_config(robot).kinematics
         self._kinematics = kinematics
         raw = policy["adapter"].get("base_offset_m")
         if not isinstance(raw, dict) or set(raw) != set(self._dimensions):

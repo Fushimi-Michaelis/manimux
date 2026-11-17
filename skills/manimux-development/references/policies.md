@@ -78,6 +78,11 @@ policy dictionary and returns `reset(session_id)`, `infer(request)`,
 The client owns transport, backend wire encoding/decoding and capability/identity
 exchange. It does not own cameras, robot sessions, IK, motion smoothing or chunk
 handoff. Preserve reset behavior and response metadata across the wire boundary.
+For XPolicyLab, a newly connected transport remains local until HELLO and the
+initial RESET both succeed. Any initialization failure or cancellation closes that
+local transport before propagating the error; `PolicyModel.close()` cannot clean up
+a connection that was never assigned to the model. A failed same-session reset
+retains the existing pending-reply fence rather than starting a second connection.
 
 When inspection shows that the requested integration owns a reusable runtime and
 serving contract, propose it as a peer framework and ask the user to confirm that
@@ -111,6 +116,52 @@ in `manimux/policies/xpolicylab/codec.py` selects grouped or native output:
   The selected adapter must define the frame and absolute/delta interpretation.
 - `native`: explicit specialized/unmigrated representation. Document its decoder
   pairing; do not silently guess a layout from vector width.
+
+For a declared joint tool, `GroupLayout.joint_tool_dofs` contributes to the wire
+end-effector width separately from `gripper_dofs`. A seven-joint arm plus a
+20-joint tool uses `*_arm_joint_state[7]` and `*_ee_joint_state[20]` for measured
+observations and absolute joint targets. This does not normalize tool positions.
+`JointAdapter` applies curve mappings and their condition inverse only to declared
+scalar-gripper indices; joint-tool coordinates remain unchanged, including in
+mixed-capability groups. `manimux.policy_adapter.pose:PoseAdapter` also accepts
+explicit radian joint tools: each pose row has seven pose values followed by all
+tool targets, fixed by coordinate name during arm IK. Legacy model-specific
+scalar-gripper adapters retain their own layout restrictions. No new
+model/checkpoint or sampler capability follows from this transport support.
+
+The generic `PoseAdapter` defines `xyz` in metres and unit quaternions in `wxyz`
+order. Its configured TCP includes the assembly mount and tool transform, and is
+expressed in each arm's own base, never the GUI scene frame. Joint-tool modes are:
+
+- `absolute_per_arm_base_xyz_wxyz`: an absolute TCP target in that base.
+- `delta_observation_base_xyz_wxyz`: translation added to the observed TCP in
+  base coordinates, with delta rotation left-multiplying the observed rotation.
+- `delta_observation_tool_xyz_wxyz`: the observed TCP transform right-multiplied
+  by the delta transform.
+
+Observation-relative rows share the request's original observation anchor;
+successive rows do not accumulate deltas. Tool targets remain **absolute** in all
+three modes. Required metadata `policy.expected_backend.model.action_semantics`
+must match the adapter, and the live backend must advertise it. A response that
+declares different semantics is rejected; the payload `format` is also checked
+even if joint and pose row widths happen to match. Geometry units, group widths,
+horizon, finite values and unit quaternions are checked. One failed IK rejects
+the whole chunk, including parallel process decoding. Success must preserve all
+fixed tool coordinates. Device position bounds and command-rate validation remain
+owned by execution and the component; the adapter does not clip joint tools.
+
+Joint-tool pose decoding uses `execution.ik.mode: chunk` with inline or process
+decoding. `parallel_ik: true` requires process decoding and retains atomic chunk
+acceptance. Step IK and `delta_step_base_xyz_wxyz` are rejected for joint tools.
+Single-group prefixes may retain the assembly's `right` or `left` namespace;
+every group must have a unique string prefix. The empty single-group prefix and
+legacy scalar-gripper `[0,1]` checks remain supported.
+
+`PoseAdapter.supported_sampling_modes` declares only `default`. The runtime
+checks an adapter's optional sampling-mode declaration against the selected
+strategy before connecting devices; this is separate from live backend sampling
+capabilities. Generic pose support does not supply RTC/PAINT conditioning,
+candidate scoring, independent-group fallback or waypoint handoff codecs.
 
 The XPolicyLab client selects these through `policy.options.action_format`; its
 default is currently `native`. Migrated joint/pose adapters therefore need the
@@ -201,12 +252,19 @@ For a new adapter, explicitly establish:
 - IK seed, fixed tool coordinates, solver constraints and failure behavior.
 
 Use the injected assembled kinematics. If action decoding runs in another process,
-rebuild from the same resolved `robot["config"]` using the offline `RobotModel`;
+rebuild with `RobotModel.from_robot_config(robot)` using the resolved robot section,
+including `robot.options.component_mounts`;
 do not instantiate a second default body or pass a hardware connection. See
 `policy_adapter/kinematics.py` for current DP/OpenWAM/XR1 handling. Specialized
 adapters may have different solver requirements; preserve whole-chunk rejection
 versus per-step hold behavior. SAPolicy's bounded IK must not be replaced as a
 side effect of a different model's integration.
+
+AAC requests and BID's optional AAC horizon carry the bound component mounts with
+the assembly path. XPolicyLab and StarVLA include mounts in their geometry cache
+identity. Current AAC metrics still require scalar grippers; runtime configuration
+rejects AAC and BID-with-AAC for joint-tool layouts. Mount propagation does not
+extend the metric to a multi-joint hand.
 
 ### Observation state and IK seeds
 

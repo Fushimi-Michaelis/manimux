@@ -1,0 +1,58 @@
+# Offline model limits are ceilings; narrow them for the actual installation.
+# Bind serial, expected hardware version, MIT gains and current limits in the private station.
+type: end_effector
+action_layout: {joint_tool_dofs: 20}
+implementation: manimux.embodiments.end_effector.wuji:WujiHand2
+options:
+  side: right
+  model_version: '2.2'
+hardware:
+  execute: false
+  serial: null
+  expected_hw_version: null
+  joint_limits:
+  - - -1.187
+    - 1.291
+  - - -1.484
+    - 0.698
+  - - -1.047
+    - 1.57
+  - - -1.047
+    - 1.57
+  - - -1.047
+    - 1.57
+  - - -0.698
+    - 0.698
+  - - -1.047
+    - 2.094
+  - - -1.047
+    - 1.57
+  - - -1.047
+    - 1.57
+  - - -0.698
+    - 0.698
+  - - -1.047
+    - 2.094
+  - - -1.047
+    - 1.57
+  - - -1.047
+    - 1.57
+  - - -0.698
+    - 0.698
+  - - -1.047
+    - 2.094
+  - - -1.047
+    - 1.57
+  - - -1.047
+    - 1.57
+  - - -0.698
+    - 0.698
+  - - -1.047
+    - 2.094
+  - - -1.047
+    - 1.57
+  kp: null
+  kd: null
+  effort_limit_a: null
+  stale_timeout_s: 0.2
+  ready_timeout_s: 3.0

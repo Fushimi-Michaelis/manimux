@@ -60,7 +60,14 @@ def step_ik_enabled(config):
 def validate_ik_config(config):
     if not step_ik_enabled(config):
         return
+    from manimux.embodiments.layout import group_layouts
     from manimux.plugins import load_plugin
+
+    layouts = group_layouts(config["robot"]["group_dims"], config["policy"]["adapter"])
+    if any(layout["gripper_dofs"] != 1 for layout in layouts.values()):
+        raise ValueError(
+            "step IK requires one scalar gripper per group; joint tools require chunk IK"
+        )
 
     cls = load_plugin(
         config["policy"]["adapter"]["type"], group="manimux.policy_adapter", builtins={}

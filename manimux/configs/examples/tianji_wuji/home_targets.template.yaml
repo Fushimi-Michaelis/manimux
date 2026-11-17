@@ -1,0 +1,8 @@
+# Fragment for a PRIVATE COPY of the selected robot assembly, not an experiment.
+# Defaults match ManiMux tianji_taccap_pack_plate.yaml; adjust only for a qualified installation.
+# For right-only assemblies, remove left_arm. Loading this fragment triggers no motion.
+home:
+  name: pack_plate_start
+  joints_deg:
+    left_arm: [89.549, -32.95, -52.6334, -127.1007, -54.3386, 4.6073, 54.6561]
+    right_arm: [-88.6985, -13.1926, 37.6683, -117.9514, 50.1699, -34.0801, -32.0042]

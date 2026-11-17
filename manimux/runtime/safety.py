@@ -5,6 +5,7 @@ from enum import StrEnum
 
 import numpy as np
 
+from manimux.embodiments.layout import group_layouts, joint_tool_slices
 from manimux.types import FloatArray, RobotCommand, RobotState, copy_group_vector
 
 
@@ -33,9 +34,14 @@ class SafetyGuard:
         max_acceleration: dict[str, list[float]] | None = None,
         control_dt_s: float | None = None,
         device_bounds: dict[str, FloatArray] | None = None,
+        action_layouts: dict | None = None,
     ) -> None:
         self._group_dims = dict(group_dims)
         self._position_limit_abs = position_limit_abs
+        self._joint_tools = (
+            joint_tool_slices(group_layouts(group_dims, {"group_layouts": action_layouts}))
+            if action_layouts is not None else {}
+        )
         raw_limits = (position_lower, position_upper, max_velocity)
         configured = [bool(values) for values in raw_limits]
         if (any(configured) or max_acceleration) and not all(configured):
@@ -55,8 +61,10 @@ class SafetyGuard:
             bounds = np.asarray(raw, dtype=float)
             if name not in self._group_dims or bounds.shape != (self._group_dims[name], 2):
                 raise ValueError(f"device bounds for group {name!r} do not match robot layout")
-            if not np.isfinite(bounds).all() or np.any(bounds[:, 0] >= bounds[:, 1]):
-                raise ValueError(f"device bounds for group {name!r} must be finite ordered pairs")
+            # Unbounded coordinates can accompany a separately bounded tool
+            # when its arm controller declares no position bounds.
+            if np.isnan(bounds).any() or np.any(bounds[:, 0] >= bounds[:, 1]):
+                raise ValueError(f"device bounds for group {name!r} must be ordered non-NaN pairs")
             self._position_lower[name] = np.maximum(
                 bounds[:, 0], self._position_lower.get(name, bounds[:, 0]),
             )
@@ -65,11 +73,15 @@ class SafetyGuard:
             )
         for name in self._position_lower:
             if position_limit_abs is not None:
-                self._position_lower[name] = np.maximum(
-                    self._position_lower[name], -position_limit_abs,
+                arm = (
+                    slice(0, self._joint_tools[name].start)
+                    if name in self._joint_tools else slice(None)
                 )
-                self._position_upper[name] = np.minimum(
-                    self._position_upper[name], position_limit_abs,
+                self._position_lower[name][arm] = np.maximum(
+                    self._position_lower[name][arm], -position_limit_abs,
+                )
+                self._position_upper[name][arm] = np.minimum(
+                    self._position_upper[name][arm], position_limit_abs,
                 )
             if np.any(self._position_lower[name] > self._position_upper[name]):
                 raise ValueError(f"command bounds for group {name!r} do not overlap")
@@ -120,7 +132,10 @@ class SafetyGuard:
             "position_limit_abs": self._position_limit_abs,
             "control_dt_s": self._control_dt_s,
             **{
-                key: {name: value.tolist() for name, value in values.items()}
+                key: {
+                    name: [float(item) if np.isfinite(item) else None for item in value]
+                    for name, value in values.items()
+                }
                 for key, values in (
                     ("position_lower", self._position_lower),
                     ("position_upper", self._position_upper),
@@ -155,8 +170,11 @@ class SafetyGuard:
             values = command.groups[name]
             if values.shape != (dim,) or not np.isfinite(values).all():
                 raise ValueError(f"command group {name!r} is invalid")
+            arm_values = (
+                values[:self._joint_tools[name].start] if name in self._joint_tools else values
+            )
             if self._position_limit_abs is not None and np.any(
-                np.abs(values) > self._position_limit_abs
+                np.abs(arm_values) > self._position_limit_abs
             ):
                 raise ValueError(f"command group {name!r} exceeds the position limit")
             self._validate_positions(name, values, label="command")

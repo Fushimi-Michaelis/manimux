@@ -253,10 +253,13 @@ class RobotView:
         return next(group for group in self.groups if group.name == name)
 
 
-def load_robogui_config(path: Path | None = None, *, robot="tianji") -> dict:
+def load_robogui_config(
+    path: Path | None = None, *, robot="tianji", local: Path | None = None,
+    validate_model_path: bool = True,
+) -> dict:
     from importlib.resources import files
 
-    from manimux.cli import read_yaml
+    from manimux.cli import _merge, load_local, read_yaml
 
     source = (
         path if path is not None else Path(__file__).parent / "robots" / robot / "robogui.yaml"
@@ -269,9 +272,12 @@ def load_robogui_config(path: Path | None = None, *, robot="tianji") -> dict:
         raise ValueError("RoboGUI YAML must reference a RobotModel using model")
     model_path = (source.parent / config["model"]).resolve()
     # RoboGUI and assembly YAML ship with manimux; source and wheel installations share relative paths.
-    if not model_path.is_file():
+    if validate_model_path and not model_path.is_file():
         raise FileNotFoundError(model_path)
     config["model"] = model_path
+    if local is not None:
+        mounts = load_local(local).get("robot", {}).get("mounts", {})
+        config["component_mounts"] = _merge(config.get("component_mounts", {}), mounts)
     # RoboGUI resolves scene assets such as mounts; embodiment and control processes do not load visual assets.
     for mesh in config.get("scene", {}).get("meshes", {}).values():
         resource = mesh["urdf"]
@@ -306,7 +312,14 @@ def load_robogui_config(path: Path | None = None, *, robot="tianji") -> dict:
     return config
 
 
-def load_robot_view(config: dict) -> RobotView:
+def load_robot_view(config: dict, *, robot_config: Mapping | None = None) -> RobotView:
     from manimux.embodiments.robot.base import RobotModel
 
-    return RobotView(RobotModel.from_config(config["model"]), config)
+    if robot_config is None:
+        robot_config = {
+            "config": config["model"],
+            "options": {"component_mounts": config.get("component_mounts")},
+        }
+    elif Path(robot_config["config"]).resolve() != Path(config["model"]).resolve():
+        raise ValueError("RoboGUI model must match the bound robot assembly")
+    return RobotView(RobotModel.from_robot_config(robot_config), config)

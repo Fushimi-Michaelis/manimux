@@ -6,7 +6,10 @@ from manimux.policy_adapter.base import PolicyAdapter
 
 
 class KinematicAdapter(PolicyAdapter):
-    """Common access for pose adapters with a trailing scalar tool coordinate."""
+    """Shared geometry loading, plus scalar-tool helpers for legacy pose adapters.
+
+    Multi-joint tools pass their full fixed-coordinate mapping to the model IK.
+    """
 
     # Adapters that route chunk IK through _solve_ik may select
     # policy.adapter.ik_backend: mink (default) | dls.
@@ -16,7 +19,7 @@ class KinematicAdapter(PolicyAdapter):
         if kinematics is None:
             from manimux.embodiments.robot.base import RobotModel
 
-            kinematics = RobotModel.from_config(robot["config"]).kinematics
+            kinematics = RobotModel.from_robot_config(robot).kinematics
         super().__init__(robot, policy, kinematics=kinematics)
         if "kinematics" in policy["adapter"] or "kinematics_options" in policy["adapter"]:
             raise ValueError("kinematics belongs in robot.config")

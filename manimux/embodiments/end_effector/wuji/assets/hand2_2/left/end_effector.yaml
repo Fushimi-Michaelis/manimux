@@ -1,0 +1,134 @@
+name: wuji_hand2_2_left
+root_link: l_mount
+tcp:
+  xyz:
+  - 0.00300066278664531
+  - 0.0
+  - -0.0285015084627264
+  rpy:
+  - 0.0
+  - 0.0
+  - -1.63383587247439e-05
+inputs: 20
+rest_inputs:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+joints:
+- joint: l_thumb_cmc_flex
+  input: 0
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_thumb_cmc_abd
+  input: 1
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_thumb_mcp
+  input: 2
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_thumb_ip
+  input: 3
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_index_finger_mcp_flex
+  input: 4
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_index_finger_mcp_abd
+  input: 5
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_index_finger_pip
+  input: 6
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_index_finger_dip
+  input: 7
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_middle_finger_mcp_flex
+  input: 8
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_middle_finger_mcp_abd
+  input: 9
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_middle_finger_pip
+  input: 10
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_middle_finger_dip
+  input: 11
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_ring_finger_mcp_flex
+  input: 12
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_ring_finger_mcp_abd
+  input: 13
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_ring_finger_pip
+  input: 14
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_ring_finger_dip
+  input: 15
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_pinky_mcp_flex
+  input: 16
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_pinky_mcp_abd
+  input: 17
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_pinky_pip
+  input: 18
+  at_0: 0.0
+  at_1: 1.0
+  clip: false
+- joint: l_pinky_dip
+  input: 19
+  at_0: 0.0
+  at_1: 1.0
+  clip: false

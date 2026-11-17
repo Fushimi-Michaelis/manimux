@@ -1,0 +1,21 @@
+# Synthetic mount-only bindings for offline display. Do not use on hardware.
+robot:
+  mounts:
+    left_hand:
+      xyz:
+      - 0.01
+      - 0.02
+      - 0.03
+      rpy:
+      - 0.1
+      - 0.2
+      - 0.3
+    right_hand:
+      xyz:
+      - 0.01
+      - 0.02
+      - 0.03
+      rpy:
+      - 0.1
+      - 0.2
+      - 0.3

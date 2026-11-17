@@ -11,8 +11,10 @@ from manimux.runtime.executors.limits import (
     ScalarLimits,
     bounded_step,
     decelerate_velocity,
+    joint_tool_motion_parameters,
     limit_step,
     limit_velocity,
+    motion_sections,
     tracking_step,
 )
 from manimux.types import (
@@ -44,7 +46,12 @@ class SmoothExecutor:
     ) -> None:
         self._dt_s = control_dt_s
         # Optional resolved snapshot from SafetyGuard.execution_limits().
-        self._command_limits = command_limits or {}
+        self._command_limits = copy.deepcopy(command_limits or {})
+        for key, unbounded in (("position_lower", -np.inf), ("position_upper", np.inf)):
+            self._command_limits[key] = {
+                name: np.asarray([unbounded if item is None else item for item in values])
+                for name, values in self._command_limits.get(key, {}).items()
+            }
         rc = 1.0 / (2.0 * math.pi * config["cutoff_hz"])
         self._alpha = control_dt_s / (rc + control_dt_s)
         self._limits = ScalarLimits(
@@ -55,6 +62,7 @@ class SmoothExecutor:
             max_step_dt_s=config["max_step_dt_s"],
         )
         self._gripper = config["gripper"]
+        self._joint_tool = config.get("joint_tool")
         self._release_guard = config["release_guard"]
         self._grasp_guard = config["grasp_guard"]
         self._tracking_kinematics = None
@@ -123,6 +131,8 @@ class SmoothExecutor:
         return RobotCommand(groups, now_ns, plan_id=None)
 
     def reset(self, state: RobotState, *, preserve_gripper_latch: bool = False) -> None:
+        if self._joint_tool and set(self._joint_tool["group_slices"]) - state.groups.keys():
+            raise ValueError("joint tool motion groups are absent from robot state")
         # Only inference holds preserve the logical state. Explicit reset,
         # Pause and Home start unlatched, independently of measured aperture.
         for name, lower in self._command_limits.get("position_lower", {}).items():
@@ -148,6 +158,12 @@ class SmoothExecutor:
         self._grasp_armed = {}
         self._grasp_bypassed = set()
         self._release_bypassed = set()
+        for name, values in state.groups.items():
+            motion_sections(
+                name, len(values), self._limits,
+                self._gripper["group_indices"].get(name) if self._gripper else None,
+                self._joint_tool,
+            )
         if self._gripper is None:
             return
         for name, index in self._gripper["group_indices"].items():
@@ -179,10 +195,20 @@ class SmoothExecutor:
         """Apply resolved safety limits after shaping, before advancing history."""
         shared = self._command_limits
         for name, lower in shared.get("position_lower", {}).items():
+            lower = np.array(lower, dtype=float, copy=True)
+            upper = np.array(shared["position_upper"][name], dtype=float, copy=True)
             count = len(output[name])
             speed = self._limits.velocity_bound(self._dt_s)
             vmax = np.full(count, np.inf if speed is None else speed)
             amax = np.full(count, self._limits.max_acceleration or np.inf)
+            for part, limits, _ in motion_sections(
+                name, count, self._limits, None, self._joint_tool,
+            ):
+                vmax[part] = limits.velocity_bound(self._dt_s) or np.inf
+                amax[part] = limits.max_acceleration or np.inf
+                if limits.position_limit_abs is not None:
+                    lower[part] = np.maximum(lower[part], -limits.position_limit_abs)
+                    upper[part] = np.minimum(upper[part], limits.position_limit_abs)
             if self._gripper is not None and name in self._gripper["group_indices"]:
                 index = self._gripper["group_indices"][name]
                 vmax[index] = self._gripper["max_velocity"] or np.inf
@@ -192,7 +218,7 @@ class SmoothExecutor:
             output[name], velocities[name] = bounded_step(
                 output[name], self._previous[name], self._previous_velocity[name],
                 dt_s=self._dt_s,
-                lower=np.asarray(lower), upper=np.asarray(shared["position_upper"][name]),
+                lower=lower, upper=upper,
                 max_velocity=vmax, max_acceleration=amax, group=name,
             )
             diagnostics = self.gripper_diagnostics.get(name, {})
@@ -631,6 +657,7 @@ class SmoothExecutor:
                     position_gain=self._alpha / self._dt_s,
                     limits=limits,
                     gripper_indices=self._gripper["group_indices"] if self._gripper else None,
+                    joint_tool=self._joint_tool,
                 )
                 output.update(group_output)
                 velocities.update(group_velocity)
@@ -646,18 +673,20 @@ class SmoothExecutor:
                 dt_s=self._dt_s,
                 limits=self._limits,
                 gripper_indices=self._gripper["group_indices"] if self._gripper else None,
+                joint_tool=self._joint_tool,
             )
         for name in reference.hold_groups:
             velocity = self._previous_velocity[name]
-            velocities[name] = decelerate_velocity(
-                velocity,
-                self._limits.max_acceleration,
-                self._dt_s,
-                mode=self._limits.mode,
-                independent_index=(
-                    self._gripper["group_indices"].get(name) if self._gripper else None
-                ),
-            )
+            velocities[name] = np.empty_like(velocity)
+            for part, limits, index in motion_sections(
+                name, len(velocity), self._limits,
+                self._gripper["group_indices"].get(name) if self._gripper else None,
+                self._joint_tool,
+            ):
+                velocities[name][part] = decelerate_velocity(
+                    velocity[part], limits.max_acceleration, self._dt_s,
+                    mode=limits.mode, independent_index=index,
+                )
             output[name] = self._previous[name] + velocities[name] * self._dt_s
         self._shape_grippers(now_ns, reference, output, velocities, state)
         self._bound_commands(output, velocities)
@@ -799,6 +828,8 @@ def smooth_parameters(**options) -> dict:
     }
     if values.get("gripper") is not None:
         values["gripper"] = gripper_hysteresis_parameters(**values["gripper"])
+    if values.get("joint_tool") is not None:
+        values["joint_tool"] = joint_tool_motion_parameters(**values["joint_tool"])
     if values.get("release_guard") is not None:
         values["release_guard"] = gripper_release_guard_parameters(**values["release_guard"])
     if values.get("grasp_guard") is not None:

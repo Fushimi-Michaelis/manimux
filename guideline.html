@@ -266,6 +266,146 @@ and the controller's pure command validation still apply, without command transm
 This does not test motor readiness or successful physical execution. The resolved shared
 bounds, scalar cap, command-safety rates and control period are saved as
 <code>meta.json: command_limits</code>.</p>
+<p>For a multi-joint tool, declare <code>joint_tool_dofs</code> in its component's
+<code>action_layout</code>. Direct and Smooth keep those trailing coordinates separate
+from scalar gripper travel. Configure <code>executor.motion_limits.joint_tool</code>
+with tool-specific <code>max_velocity</code> and <code>max_acceleration</code> in the
+declared coordinate units; <code>mode</code>, <code>max_step_dt_s</code> and an optional
+<code>position_limit_abs</code> are also supported. The loader derives the
+<code>group_slices</code> from the assembly; a seven-joint arm with a 20-joint hand
+uses <code>[7, 27]</code>. Shared settings also configure Smooth; without a shared
+motion profile, use <code>executor.smooth.joint_tool</code> directly. Tool coordinates
+retain their device bounds and are excluded from the arm's symmetric position cap
+and scalar gripper mappings. Unbounded endpoints appear as <code>null</code> in saved
+command-limit metadata. MPC and model-specific scalar-gripper pose adapters do not support
+this tool layout. A compatible driver, assembly and policy configuration are still required.</p>
+<p>The generic <code>manimux.policy_adapter.pose:PoseAdapter</code> supports an explicit
+radian joint tool using <code>[xyz, qw, qx, qy, qz, tool...]</code> rows. It fixes all tool
+coordinates during arm IK. Translation is in metres and targets refer to the configured
+TCP in each arm's base. It supports absolute targets and deltas anchored to the request
+observation in base or tool coordinates; tool joint targets always remain absolute.
+Select <code>policy.options.action_format: pose</code> for XPolicyLab and declare matching
+<code>action_semantics</code> in the adapter and expected backend metadata. Use
+<code>execution.ik.mode: chunk</code>; joint-tool step IK and per-step feedback deltas
+are rejected. Ordinary async/serial requests are supported; pose conditioning and
+candidate-selection capabilities are not implied. See the
+<a href=".agents/skills/manimux-development/references/tianji-wuji.md#state-and-action-contract">Tianji-Wuji action contract</a>
+for coordinate order, exact delta semantics and a policy fragment.</p>
+<p>The Wuji Hand 2 component selections are
+<code>embodiment/end_effector/wuji_hand2_left.yaml</code> and
+<code>wuji_hand2_right.yaml</code>, using the explicitly selected Hand 2.2 description.
+Their offline models require no SDK or device connection. Hardware binding requires
+an exact serial, expected hardware version and installation-specific joint limits;
+execution additionally requires explicit MIT gains and current limits. Connection is
+feedback-only. Stop requests a measured-position hold, while release is a separate
+explicit operation that may release a grasp. Close refuses owned or uncertain actuation
+until release completes. These components still require assembly mounting/payload and
+exit integration before a live rollout. See the
+<a href=".agents/skills/manimux-development/references/wuji-hand2.md">Wuji component contract</a>
+for clock limitations, resources and lifecycle details.</p>
+<p>Tianji-Wuji assemblies use
+<code>manimux.embodiments.robot.tianji_wuji:create_robot</code> with
+<code>embodiment/robot/tianji_wuji_right.yaml</code> (27 coordinates) or
+<code>tianji_wuji.yaml</code> (54 coordinates). Matching control profiles and
+<code>executor/tianji_wuji_direct.yaml</code> / <code>tianji_wuji_smooth.yaml</code>
+keep arm and hand limits separate. Both execution switches default off.
+Bind measured flange-to-hand transforms using station <code>robot.mounts</code>;
+missing transforms are rejected. Offline adapters and action-decoder processes retain
+these bindings. Select <code>--robot tianji_wuji_right</code> or
+<code>--robot tianji_wuji</code> in RoboGUI and pass
+<code>--local /path/to/station.yaml</code>
+to load the same physical mounts. RoboGUI does not read a station implicitly;
+its network addresses remain separate launch options. Current AAC scoring requires
+scalar grippers, so AAC and BID with an AAC horizon reject joint-tool layouts.
+Arm stop retains Tianji's existing disable behavior.
+An activated hand needs explicit support confirmation before release/close through
+the existing RoboGUI recovery flow. Shipped <code>home.joints_deg</code> targets
+match ManiMux's <code>tianji_taccap_pack_plate.yaml</code>. An optional
+<code>configs/examples/tianji_wuji/home_targets.template.yaml</code> fragment supplies
+the same angles for a private assembly copy selected with experiment <code>robot.config</code>.
+Rebase component paths when moving a copy. Runtime Home retains the entry measured
+hand targets until all arms arrive. It uses
+<code>hardware.home_motion</code> (100 Hz, 9 deg/s, 0.5 degrees, 5 s by default)
+and verifies advancing arm feedback and measured arrival after the final submission.
+It then ramps controlled hands to the twenty zero targets in <code>hardware.hand_home.joints_rad</code>, matching the Wuji <code>move2start.py</code> Home pose.
+<code>hardware.hand_home</code> supplies 200 Hz, a minimum 1.5 s cosine ramp,
+<code>max_velocity_rad_s: 0.5</code>, <code>max_acceleration_rad_s2: 2.0</code>,
+a 2 s hold, 0.02 rad tolerance and a 5 s arrival timeout. The largest displacement
+across all selected hand joints determines a shared duration satisfying both rate
+limits; a 2.094 rad move takes at least 6.58 s with these defaults. These Home
+limits are independent of executor settings and can be overridden through
+station/experiment <code>hardware.hand_home</code>. They bound the sampled command
+reference; device timing and measured motion still require physical validation.
+Slow SDK calls extend the schedule without skipping reference samples.
+All arms must remain Home, and new hand
+feedback must confirm arrival before the measured hold interval. These parameters
+can be overridden individually; hand control disabled means no hand-zero stage.
+Home errors are reported; arm stop still disables owned arms and hand release
+still requires support confirmation. Once cleanup invalidates whole-robot motion,
+the recovery panel withdraws Home retry and retains support/release. Idle Home,
+drag and automatic fault clearing are unadvertised. Physical rollout qualification
+remains outstanding. Config-only examples are
+<code>configs/examples/tianji_wuji/offline_right.yaml</code> and <code>offline.yaml</code>;
+they do not connect devices when loaded.
+See the <a href=".agents/skills/manimux-development/references/tianji-wuji.md">assembly contract</a>
+for local resources, bindings and validation scope.</p>
+<p>For a runnable Tianji-Wuji demonstration, the <code>disconnected*.yaml</code>
+examples select in-memory arm/hand endpoints and a synthetic policy. They reuse
+the ordinary runtime, control limits, Home and recording without constructing motor
+SDKs. Install the offline Tianji geometry and GUI dependencies first, then run from
+the repository root in that Python environment:</p>
+<pre><code class="language-bash">python -m manimux run \
+  --config manimux/configs/examples/tianji_wuji/disconnected_right.yaml --once
+# Dual-arm Smooth variant:
+python -m manimux run \
+  --config manimux/configs/examples/tianji_wuji/disconnected.yaml --executor smooth --once
+</code></pre>
+<p>To exercise the GUI controls, use these commands in separate terminals:</p>
+<pre><code class="language-bash">python -m manimux.robogui.dashboard --robot tianji_wuji_right \
+  --local manimux/configs/examples/tianji_wuji/synthetic_mounts_right.yaml --host 127.0.0.1
+python -m manimux run \
+  --config manimux/configs/examples/tianji_wuji/disconnected_gui_right.yaml
+</code></pre>
+<p>Open <a href="http://127.0.0.1:8086">RoboGUI</a>, Prepare Run, Start, then use
+active Home or Finish &amp; Home. The simulated resources remain owned until the
+support checkbox and release confirmation are completed. Idle recovery actions
+remain unavailable. Remove <code>_right</code> from the preset and filenames for
+both arms. Add <code>--demo</code> to the dashboard command for display alone.
+These files select synthetic mounts explicitly and reject physical hardware
+bindings; never substitute them for a measured station. Recorded backend metadata
+labels the synthetic source and ideal position tracking. Execution enabled here
+means memory commands; it is not evidence of physical movement. Executing hardware
+hands require a configured RoboGUI confirmation channel before connection.</p>
+<p>For a reproducible transport/runtime check, install the <code>xpolicylab</code>
+extra in the same environment and run the synthetic loopback matrix from the checkout:</p>
+<pre><code class="language-bash">python scripts/validation/tianji_wuji_runtime.py \
+  --matrix --output /tmp/tianji-wuji-validation
+</code></pre>
+<p>Use a new output directory each time. The 16 cases cover single/dual arm,
+joint/absolute-pose actions, Direct/Smooth and serial/async. Each runs 100 formal
+control ticks through the actual client, worker and runtime, then Home and cleanup.
+The output retains original MessagePack frames, request IDs, accepted plans and
+<code>memory_commands.npz</code>; every recorded command is checked against the
+values written to the memory endpoints. These are synthetic inputs and ideal
+feedback, without model weights or hardware. The <a
+href=".agents/skills/manimux-development/references/tianji-wuji.md#network-and-runtime-validation">validation contract</a>
+distinguishes response rejection, failed runs and physical verification.
+The package ships the public Wuji resources; native Tianji SDK/visual resources
+must be installed separately and are required even for this offline display/IK check.</p>
+<p>To inspect a supplied Tianji-Wuji URDF without devices, use
+<code>scripts/assets/prepare_tianji_wuji.py</code> with explicit
+<code>--urdf</code> and <code>--package-root</code>, then
+<code>scripts/validation/tianji_wuji_geometry.py --output /tmp/tianji-wuji-geometry.json</code>.
+The generated descriptions stay local and do not replace the selected runtime model.
+The audit checks mesh-backed arm/hand composition and compares the selected native SDK
+geometry without constructing motor drivers. <code>--description-only</code> skips the
+SDK comparison. A geometry mismatch saves the report and exits with code 2.
+The selected <code>robot/urdf/marvin_waist_mobile.urdf</code> passes offline comparison
+with M6_40 SDK FK. Its original grippers are omitted when extracting bare arms;
+separate Wuji resources supply the hands. The composition probe uses an explicitly
+synthetic mount, while physical installation still requires measured bindings. See the
+<a href=".agents/skills/manimux-development/references/tianji-wuji.md#source-description-and-offline-geometry-audit">geometry audit contract</a>
+for commands and the measured differences.</p>
 <p>Use the same <code>--local PATH</code> on entry points that support station binding. The common camera, policy and runtime entry points
 support it; RoboGUI network options remain separate. Advanced model-specific launchers
 may instead take a model recipe as <code>--config</code>. See <a href="skills/manimux-station-setup/references/station.md#scope-and-remaining-independent-entry-points">entry-point scope</a>.</p>
@@ -2591,7 +2731,7 @@ The failed attempt is excluded from successful tick data.</p>
 <tr><td><code>config.camera_server.pub_endpoint</code></td><td>Camera publication endpoint.</td></tr>
 <tr><td><code>config.camera_server.rep_endpoint</code></td><td>Camera request/reply endpoint.</td></tr>
 <tr><td><code>config.camera_server.service</code></td><td>Named service binding, e.g. camera or policy.</td></tr>
-<tr><td><code>config.control_profile</code></td><td>Path selecting shared robot control settings.</td></tr>
+<tr><td><code>config.control_profile</code></td><td>Path selecting shared robot control settings. Supports relative <code>_base_</code> inheritance; inherited fingerprints are recorded in <code>config_sources</code>.</td></tr>
 <tr><td><code>config.evaluation.kind</code></td><td>Event type in events.jsonl; in an evaluation rubric, binary / count / stages selects the scoring rule.</td></tr>
 <tr><td><code>config.evaluation.label</code></td><td>Human-readable rubric/score option label.</td></tr>
 <tr><td><code>config.evaluation.options[].id</code></td><td>Device index under parameter_devices; stable scoring-option ID under evaluation.options[].</td></tr>
@@ -3149,13 +3289,27 @@ The failed attempt is excluded from successful tick data.</p>
 Open a finalized episode in a separate, read-only replay process:</p>
 <pre><code class="language-bash">cd {repo}
 envs/yam/.venv/bin/python -m manimux.robogui.replay \
-  --robot yam --episode /path/to/session-xxx/rollout-001 \
+  --episode /path/to/session-xxx/rollout-001 \
   --source state --host 127.0.0.1 --port 8087
 </code></pre>
 <p><code>--source state</code> shows measured state; <code>scheduled</code> shows the timeline reference;
-<code>command</code> shows executor output, not a hardware acknowledgment. For a custom display model,
-replace <code>--robot yam</code> with <code>--config /path/to/robogui.yaml</code>.
-The player starts paused and supports seeking and playback speed using recorded tick timestamps.
+<code>command</code> shows executor output, not a hardware acknowledgment.
+<code>--source prediction --plan-index 0</code> shows the first accepted plan's decoded
+joint-position prediction (<code>canonical_raw</code>) on its policy time grid.
+Choose another nonnegative index to inspect another plan. Overlapping predictions
+are not concatenated; pose-space plans are rejected by this player.
+New runtime records with an assembled model store its geometry parameters in
+<code>meta.json.robot_geometry</code>. Replay uses these recorded mounts, component
+options and coordinate order even if the original assembly or station YAML changes.
+Component code, offline SDK libraries and visual assets must still be installed;
+hardware connection parameters are excluded from the geometry snapshot.
+Optional <code>--robot yam</code> or <code>--config /path/to/robogui.yaml</code>
+supplies display styling. For older records without a snapshot, one of these options
+is required to select the model; add <code>--local /path/to/station.yaml</code> if it
+needs station mount bindings. Current display configuration cannot replace a snapshot,
+and invalid snapshots are rejected.
+The player starts paused and supports seeking and playback speed. Tick streams use
+recorded tick timestamps; prediction times describe the policy grid, not achieved motion.
 It does not replay RGB videos or connect to hardware. No camera, policy or runtime service is needed.
 Partial episodes and records without the selected stream cannot be replayed.
 <a href="skills/manimux-experiments/references/records.md">Recording contract</a></p>

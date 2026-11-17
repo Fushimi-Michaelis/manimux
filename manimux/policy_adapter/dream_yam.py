@@ -28,7 +28,7 @@ class DreamYamJointAdapter(JointAdapter):
         if kinematics is None:
             from manimux.embodiments.robot.base import RobotModel
 
-            kinematics = RobotModel.from_config(robot["config"]).kinematics
+            kinematics = RobotModel.from_robot_config(robot).kinematics
         from manimux.embodiments.arm.yam.kinematics import YamManipulatorKinematics
 
         if set(kinematics.models) != set(self._dimensions) or any(

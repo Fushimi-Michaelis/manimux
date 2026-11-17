@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import replace
 
 import numpy as np
@@ -83,7 +84,7 @@ class XPolicyLabWsPolicyModel:
             raise ValueError(
                 "AAC geometry comes from robot.config; remove policy.options.aac_kinematics"
             )
-        self._aac_robot_config: str | None = None
+        self._aac_robot_config: dict | None = None
         self._aac_kinematics: RobotKinematics | None = None
         self._aac_ee_stats: EeActionStats | None = None
         self._aac_ee_stats_path: str | None = None
@@ -113,8 +114,14 @@ class XPolicyLabWsPolicyModel:
             connect_timeout_s=self._connect_timeout_s,
             request_timeout_s=self._request_timeout_s,
         )
-        client.connect()
-        client.reset()
+        try:
+            client.connect()
+            client.reset()
+        except BaseException:
+            # Ownership is published only after initialization succeeds. Close
+            # this local transport on failure too, including cancellation.
+            client.close()
+            raise
         self._client = client
         self._session_id = session_id
         self._aac_previous = None
@@ -263,6 +270,7 @@ class XPolicyLabWsPolicyModel:
         deferred = bool(getattr(request, "aac_defer_selection", False)) or horizon is not None
         options = horizon or {
             "robot_config": request.aac_robot_config,
+            "component_mounts": getattr(request, "aac_component_mounts", None),
             "ee_stats_path": request.aac_ee_stats_path,
             "motion_threshold": request.aac_motion_threshold,
             "chunk_id_selector": request.aac_chunk_id_selector,
@@ -271,11 +279,15 @@ class XPolicyLabWsPolicyModel:
         robot_config = options["robot_config"]
         if not robot_config:
             raise ValueError("AAC requires the runtime's robot.config")
-        if self._aac_kinematics is None or self._aac_robot_config != robot_config:
+        geometry = {
+            "config": robot_config,
+            "options": {"component_mounts": options.get("component_mounts")},
+        }
+        if self._aac_kinematics is None or self._aac_robot_config != geometry:
             from manimux.embodiments.robot.base import RobotModel
 
-            self._aac_kinematics = RobotModel.from_config(robot_config).kinematics
-            self._aac_robot_config = robot_config
+            self._aac_kinematics = RobotModel.from_robot_config(geometry).kinematics
+            self._aac_robot_config = deepcopy(geometry)
         stats_path = options["ee_stats_path"]
         if not isinstance(stats_path, str) or not stats_path:
             raise ValueError("AAC requires aac_ee_stats_path")

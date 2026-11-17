@@ -1,0 +1,9 @@
+# Managed synthetic demo; support-confirmation UI gates simulated release.
+_base_: disconnected_right.yaml
+run:
+  max_control_steps: 0
+robot:
+  options:
+    release_confirmation: true
+robogui:
+  enabled: true

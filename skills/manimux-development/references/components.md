@@ -172,14 +172,29 @@ Read `manimux/embodiments/end_effector/base.py` and `gripper.py` in that directo
 `GripperBase` specifically uses `GripperState` / `GripperCommand` with normalized
 travel: 0 closed, 1 open. This is not finger-pad distance or a universal tool format.
 
+`joint_tool.py` defines `JointToolBase`, `JointToolState` and `JointToolCommand`
+for absolute joint positions. The base takes explicit `KinematicCoordinate` names
+and radian/metre units plus finite `(num_joints, 2)` command limits. State and
+command vectors own read-only copies. Feedback retains its timestamp in station
+monotonic seconds and its received-sample sequence; repeated reads must not create
+new sample identities. Pure `validate_state()` checks width, while
+`validate_command()` also checks command bounds. Measured limit excursions remain
+visible rather than being clipped or replaced with target positions.
+
 Put implementations under `manimux/embodiments/end_effector/<name>/` and component
 YAML under `manimux/configs/embodiment/end_effector/`. Keep flange-to-TCP geometry in
 the offline tool model (`manimux/kinematics/tool.py`); a tool-mounted sensor still
 implements the sensor interface. A borrowed SDK connection must not be independently
 closed by the borrower.
 
-Current assembly/executor action handling supports zero or one scalar gripper
-coordinate per group. A multi-coordinate hand or suction capability requires an
+`RobotBase` supports a separate scalar gripper or joint tool per group. It checks
+joint-tool coordinate metadata against the offline model, concatenates measured
+positions and validates every tool target before submitting any controller batch.
+Tool failures preserve partial-dispatch evidence (`<group>.joint_tool`) and use
+the existing shared-owner stop/cleanup path. Driver stop/close semantics remain
+device-specific; this support adds no Home, enable or release behavior.
+Direct and Smooth support explicit joint-tool motion limits. MPC and the existing
+scalar-gripper pose adapters do not. Other tool capabilities still require an
 explicit end-to-end extension; inheriting `EndEffectorBase` alone is insufficient.
 Test the actual capability's units, command mapping and measured feedback, not a
 fake scalar adapter that discards unsupported coordinates.
@@ -214,6 +229,22 @@ Read `manimux/embodiments/robot/base.py`, its sibling `__init__.py`, and
 The result exposes `RobotBase` to the runtime, not a vendor-specific robot object.
 Reuse generic assembly/model behavior; keep any required hardware assembly factory
 under `manimux/embodiments/robot/<name>/`.
+
+Consumers of a resolved runtime robot section use
+`RobotModel.from_robot_config(robot)` so `robot.options.component_mounts` reaches
+the same offline loader as the assembly factory. The path-only `from_config()`
+entry still accepts explicit `component_mounts`. Neither entry reads a station
+implicitly or opens a device. Scene placement stays in RoboGUI display options.
+
+`RobotModel.snapshot()` records the resolved component implementations/options,
+physical mounts, group order/layout and arm Home targets. Runtime writes this as
+`meta.json.robot_geometry` (`manimux.robot_geometry.v1`). `from_snapshot()` restores
+it without rereading assembly, component or station YAML; hardware bindings are
+excluded. This freezes parameters, not component code, SDK libraries or visual
+assets: those must remain installed and compatible. Explicit group order survives
+JSON writers that sort mapping keys. Recorded replay uses this geometry in
+preference to a current preset and rejects invalid snapshots. Legacy recordings
+without snapshots require an explicitly selected model.
 
 The component `implementation` selector is used by `RobotModel.from_config()` to
 load offline models; it does not automatically construct hardware controllers.
@@ -260,6 +291,58 @@ global gripper count for heterogeneous groups. `assembly_action_contract()` and
 `group_layouts()` resolve this for clients/adapters/executors; the model checks it
 against actual geometry. `end_effector: null` means no separately attached tool,
 not removal of an integrated arm's gripper.
+
+A joint tool declares `action_layout: {joint_tool_dofs: 20}` on its component.
+Combined with a bare seven-joint arm, its resolved group layout is
+`{arm_dofs: 7, gripper_dofs: 0, joint_tool_dofs: 20}`. The tool's type is explicit
+through its coordinate ownership, not inferred from a large gripper count.
+`joint_tool_slices()` selects the `[7:27]` tool coordinates. A group cannot mix
+scalar-gripper and joint-tool coordinates. Existing arm/gripper layouts preserve
+their representation; `gripper_indices()` selects only scalar grippers and never
+assigns gripper normalization or latching to joint-tool coordinates.
+
+Declare joint-tool motion limits under `executor.motion_limits.joint_tool`, or
+under `executor.smooth.joint_tool` when no shared motion profile is used. Supported
+fields are `max_velocity`, `max_acceleration`, `max_step_dt_s`, `mode` (`per_joint`
+or `isotropic`) and an optional `position_limit_abs` in tool coordinate units.
+The loader derives `group_slices: {right_arm: [7, 27]}` from the action contract;
+explicit conflicting slices fail. Arm and tool sections are limited independently,
+including isotropic scaling, braking and inference-gap holds. Smooth's original
+symmetric position cap applies to the arm section; the tool retains its declared
+device bounds and optional tool-specific cap. Shared motion limits are propagated
+to Smooth through the same config loader as existing arm/gripper settings.
+
+`RobotBase.command_bounds()` appends the joint tool's configured command bounds.
+If the arm declares no bounds, its rows remain unbounded instead of discarding
+tool limits. Resolved safety metadata uses JSON `null` for unbounded endpoints;
+Smooth converts those endpoints back to unbounded numerical intervals internally.
+Explicit command-safety position/rate vectors still cover complete grouped widths.
+These software contracts and fake-device checks do not qualify physical hardware.
+
+The [Wuji Hand 2 component contract](wuji-hand2.md) documents the pinned SDK,
+explicit Hand 2.2 resources, NID ordering, feedback clocks and owned lifecycle.
+Its left/right component YAMLs are feedback-only until explicitly bound and
+enabled. They do not define a Tianji assembly or calibrated mounting/payload.
+The [Tianji-Wuji assembly](tianji-wuji.md) supplies right-only and dual 7+20
+factories/configurations, preserving the existing Tianji disable-on-stop behavior.
+Its measured mounts bind through station `robot.mounts`; activated hand release
+uses the existing explicit support gate before resources close. Configured
+runtime Home is implemented, while idle Home
+and drag are unadvertised. Arm targets match ManiMux's pack-plate preset. Home
+holds the entry hand pose until all arms arrive, then ramps controlled hands to
+their configured zero targets and verifies fresh measured arrival and holding.
+`hardware.hand_home` owns the tool targets, timing and tolerance. It also requires
+positive finite `max_velocity_rad_s` and `max_acceleration_rad_s2`, explicitly
+independent of executor configuration. `ramp_s` is a minimum; the largest hand
+displacement determines a synchronized cosine satisfying both reference limits.
+Targets remain checked against every tool's command bounds. These limits apply
+to the sampled command reference, not measured physical motion. The default
+assembly tool-close hook is a no-op for existing robots.
+Its source-description importer and FK audit keep supplied arm meshes separate
+from active visuals until SDK geometry agrees. The selected Marvin description
+passes offline comparison with M6_40 SDK FK; source grippers are omitted before
+attaching separate Wuji components. Physical tool mounts still require station
+bindings. See the assembly contract for commands, assumptions and audit results.
 
 `ManipulatorKinematicsBase` describes complete TCP kinematics;
 `FlangeKinematicsBase` supports a bare arm composed with a tool. Read
@@ -396,7 +479,8 @@ The referenced component YAMLs each declare `type`, `implementation: module:Clas
 and their model options. The arm declares its actual `action_layout`; the tool's
 model contributes the supported tool coordinates. A new tool implements
 `load_model`, `connect`, `get_state`, `send_command`, `stop` and `close` through
-`EndEffectorBase`/`GripperBase`. It owns the scalar gripper state/command meaning;
+`EndEffectorBase` and its matching `GripperBase` or `JointToolBase` capability.
+The component owns its state/command units and coordinate order;
 the offline tool model owns flange-to-TCP geometry. Put actual addresses and serials
 in the private station file. This is a configuration fragment, not a shipped driver.
 
@@ -459,3 +543,13 @@ mode 0 (disable), PiPER close disconnects transport, and ARX X5 delegates stop/c
 its SDK process. None is automatically equivalent to YAM position hold. Their physical
 braking/support behavior and fault-Home paths require vendor-specific validation; the
 base no-op release hook is not evidence of physical safety for a new controller.
+
+Tianji-Wuji implements configured runtime Home with advancing arm feedback after
+the final submission, measured position tolerance, hand-feedback health checks
+and explicit support confirmation before owned hand actuation is released.
+`shutdown_home_available` is a pure assembly query consumed by `ShutdownStatus`;
+the default preserves other embodiments' retry behavior. Wuji withdraws retries
+once stop/cleanup invalidates whole-robot motion. Failed/unavailable retries
+rotate the recovery token and never authorize release. The unchanged main Tianji driver checks faults/freshness in feedback and
+checks control modes, ratios and measured bounds before every command;
+its existing `stop()` still disables arms. See the assembly contract for limits.

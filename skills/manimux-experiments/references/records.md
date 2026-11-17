@@ -88,15 +88,25 @@ Replay is separate from the live dashboard. Select a finalized episode directory
 ```bash
 cd {repo}
 envs/yam/.venv/bin/python -m manimux.robogui.replay \
-  --robot yam --episode /path/to/session-xxx/rollout-001 \
+  --episode /path/to/session-xxx/rollout-001 \
   --source state --host 127.0.0.1 --port 8087
 ```
 
 Sources are `state` (measured), `scheduled` (timeline reference), and `command`
 (executor output, not hardware receipt). The shared player starts paused, supports
 seeking/speed, and preserves `ticks/monotonic_ns` intervals. No RGB playback or hardware
-connection is performed. Use `--config /path/to/robogui.yaml` instead of `--robot` for
-custom offline display models. Missing streams and `.partial` episodes are rejected.
+connection is performed. New runtime records with a `RobotModel` include
+`meta.json.robot_geometry`, a parameter snapshot of the actual assembly with its
+bound physical mounts and explicit group order. Replay restores this snapshot
+without rereading assembly/component/station YAML. Component code, offline SDK
+libraries and visual assets must still be installed; the snapshot is not an asset
+archive. Hardware connection parameters are excluded.
+
+Use `--robot yam` or `--config /path/to/robogui.yaml` for presentation options.
+For records without a geometry snapshot, one of these is required and selects the
+legacy offline model; add `--local /path/to/station.yaml` when that model needs
+station mount bindings. Current presets never override a recorded snapshot.
+Invalid snapshots, missing streams and `.partial` episodes are rejected.
 
 ## Interpretation
 

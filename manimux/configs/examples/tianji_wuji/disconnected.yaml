@@ -1,0 +1,34 @@
+# Disconnected runtime: execute enables memory endpoints only. Never bind a real station.
+# Mounts are synthetic display/test values, not installation calibration.
+_base_: offline.yaml
+run:
+  task_prompt: SYNTHETIC Tianji-Wuji software demonstration; no hardware
+  max_control_steps: 150
+  output_dir: data/tianji-wuji-disconnected
+robot:
+  type: manimux.examples.tianji_wuji:build_robot
+  options:
+    execute: true
+    end_effector_control: true
+    release_confirmation: false
+policy:
+  worker: manimux.examples.tianji_wuji:build_policy
+  options:
+    arm_amplitude_rad: 0.025
+    hand_amplitude_rad: 0.08
+  adapter:
+    type: manimux.policy_adapter.joint:JointAdapter
+    camera_map: {}
+inference:
+  algorithm: serial
+  action_start_mode: first_step_when_ready
+  blend_policy_steps: 0
+  max_chunk_policy_steps: 4
+robogui:
+  enabled: false
+  robot: tianji-wuji
+  policy_label: SYNTHETIC memory endpoints
+recording:
+  video_fps: 0
+control_profile: disconnected_control.yaml
+local: synthetic_mounts.yaml

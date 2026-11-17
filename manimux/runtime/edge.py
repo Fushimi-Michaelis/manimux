@@ -15,7 +15,7 @@ import numpy as np
 from manimux.clock import Clock, SystemClock
 from manimux.configuration import initial_pose_metadata, initial_pose_targets
 from manimux.embodiments.layout import action_contract_group_indices
-from manimux.embodiments.robot import RobotBase, build_robot
+from manimux.embodiments.robot import RobotBase, RobotModel, build_robot
 from manimux.embodiments.robot.release import observe_release
 from manimux.embodiments.sensor import build_sensor
 from manimux.embodiments.sensor.reader import SensorReader
@@ -190,6 +190,14 @@ class EdgeRuntime(PlanningContext):
         validate_ik_config(config)
         self._step_ik = step_ik_enabled(config)
         self._robot = self._build_robot()
+        if (
+            getattr(self._robot, "requires_release_confirmation", False) is True
+            and not config["robogui"]["enabled"]
+        ):
+            raise ValueError(
+                "This robot requires RoboGUI for explicit actuator-release confirmation; "
+                "enable robogui before connecting executing hands"
+            )
         self._sensors = [build_sensor(sensor, self._clock) for sensor in config["sensors"]]
         # Runtime reuses robot kinematics; decoding subprocesses load the offline
         # model from the same configuration.
@@ -235,6 +243,14 @@ class EdgeRuntime(PlanningContext):
         ):
             raise ValueError("waypoint handoff requires an execution_reference IK seed")
         self._strategy = strategy or DefaultChunkStrategy(config)
+        adapter_modes = getattr(self._adapter, "supported_sampling_modes", None)
+        if adapter_modes is not None:
+            missing = self._strategy.required_sampling_modes.difference(adapter_modes)
+            if missing:
+                raise ValueError(
+                    f"{type(self._adapter).__name__} does not support sampling modes "
+                    f"{sorted(missing)} required by {self._strategy.name!r}"
+                )
         if self._strategy.name == "bid_backward" and not getattr(
             self._adapter, "supports_candidate_decoding", False,
         ):
@@ -283,6 +299,7 @@ class EdgeRuntime(PlanningContext):
             max_acceleration=command_safety["max_acceleration"],
             control_dt_s=self._control_dt_ns / 1_000_000_000,
             device_bounds=getattr(self._robot, "command_bounds", lambda: {})() or {},
+            action_layouts=config["robot"].get("group_layouts"),
         )
         self._executor = self._build_executor()
         self._execution = ExecutionPipeline(
@@ -464,6 +481,11 @@ class EdgeRuntime(PlanningContext):
             self._config["robot"]["group_dims"],
             metadata={
                 "episode_id": episode_id,
+                "robot_geometry": (
+                    self._robot.model.snapshot()
+                    if isinstance(getattr(self._robot, "model", None), RobotModel)
+                    else None
+                ),
                 "session_id": self._session_id,
                 "task": self._config["run"]["task_prompt"],
                 "initial_pose": initial_pose_metadata(self._config),
@@ -578,6 +600,7 @@ class EdgeRuntime(PlanningContext):
             run_dir=str(self._run_dir.resolve()), episode_id=episode_id,
             home=(home if shutdown_home
                   and self._config["robot"]["options"].get("execute", False) else None),
+            home_available=lambda: getattr(self._robot, "shutdown_home_available", True),
         )
 
         preparation = OperationStatus(
@@ -1785,7 +1808,7 @@ class EdgeRuntime(PlanningContext):
                     )
                 if log_dispatch:
                     logger.info(
-                        "command_sent plan=%s physical_dispatch=%s",
+                        "command_sent plan=%s command_path_enabled=%s",
                         command.plan_id,
                         self._config["robot"]["options"].get("execute") is True,
                     )

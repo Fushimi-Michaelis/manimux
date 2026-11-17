@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -183,3 +184,65 @@ def select_initial_pose(config: dict, pose_id: str) -> dict:
                        start_duration_s=selected["duration_s"])
         result["run"]["initial_pose"] = selected
     return result
+
+
+def joint_tool_rate_contract(profile, controller, layouts):
+    """Resolve explicit arm/tool envelopes without changing a hardware driver."""
+    values = deepcopy(profile)
+    contract = values.pop("rate_contract")
+    margin = float(contract["command_margin"])
+    rated = float(controller["rated_joint_velocity_rad_s"])
+    ratio = controller["velocity_ratio"]
+    if (not math.isfinite(margin) or not 0 < margin <= 1
+            or not math.isfinite(rated) or rated <= 0
+            or isinstance(ratio, bool) or not isinstance(ratio, int)
+            or not 1 <= ratio <= 100):
+        raise ValueError("Invalid arm/tool controller rate contract")
+    controller_velocity = rated * ratio / 100
+    from manimux.embodiments.layout import joint_tool_slices
+    from manimux.runtime.executors.limits import joint_tool_motion_parameters
+
+    groups = values["robot"]["group_dims"]
+    if not layouts or set(layouts) != set(groups) or "gripper" in contract:
+        raise ValueError(
+            "Tianji joint-tool rate contract requires explicit compatible group layouts"
+        )
+    slices = joint_tool_slices(layouts)
+    if set(slices) != set(groups) or any(
+        layout.get("arm_dofs") != 7 or layout.get("gripper_dofs", 0)
+        or layout.get("joint_tool_dofs") != 20 or groups[name] != 27
+        for name, layout in layouts.items()
+    ):
+        raise ValueError(
+            "Tianji joint-tool rate contract requires seven arm and twenty hand radians"
+        )
+    tool = deepcopy(contract["joint_tool"])
+    expected = {
+        name: [part.start, part.stop] for name, part in slices.items()
+    }
+    if tool.get("group_slices") is not None and tool["group_slices"] != expected:
+        raise ValueError("joint-tool rate slices conflict with the assembly")
+    tool["group_slices"] = expected
+    tool = joint_tool_motion_parameters(**tool)
+    if tool["max_velocity"] is None or tool["max_acceleration"] is None:
+        raise ValueError(
+            "Tianji joint-tool rate contract requires explicit velocity and acceleration"
+        )
+    safety = values.setdefault("command_safety", {})
+    if "motion_limits" in values or "max_velocity" in safety:
+        raise ValueError("Tianji rate contract conflicts with authored runtime rates")
+    safety["max_velocity"] = {
+        name: [controller_velocity] * part.start
+        + [tool["max_velocity"] / margin] * (part.stop - part.start)
+        for name, part in slices.items()
+    }
+    values["motion_limits"] = {
+        "arm": {
+            "mode": contract["mode"], "max_velocity": controller_velocity * margin,
+            "max_step_dt_s": contract["max_step_dt_s"],
+            "max_acceleration": contract["max_acceleration"],
+        },
+        "joint_tool": tool,
+        "gripper": {},
+    }
+    return values

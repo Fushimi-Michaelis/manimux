@@ -8,7 +8,7 @@ The scripts are grouped by responsibility:
 
 - `setup/`: SDK installation checks, DLS-gate calibration and ChunkTrust backend export
   ([README](setup/README.md)).
-- `assets/`: build robot description assets for PiPER, X5 and ALOHA
+- `assets/`: build robot description assets for PiPER, X5, ALOHA and Tianji-Wuji
   ([README](assets/README.md)).
 - `datasets/`: prepare assets and statistics consumed by runtime inference.
 - `experiments/`: generate inference-comparison variants from one task and checkpoint
@@ -20,6 +20,11 @@ The scripts are grouped by responsibility:
 
 Policy launchers live in `manimux/servers/`; model implementations and the shared
 policy server belong to XPolicyLab.
+
+`validation/tianji_wuji_runtime.py` runs the real XPolicyLab transport against a
+loopback synthetic peer and explicit memory endpoints. It saves original wire
+frames, endpoint writes and runtime recordings. The [Tianji-Wuji contract](../.agents/skills/manimux-development/references/tianji-wuji.md#network-and-runtime-validation)
+defines its matrix, prerequisites and evidence limits.
 
 Run commands from the repository root so relative config and environment paths
 resolve consistently. For example:
